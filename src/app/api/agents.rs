@@ -16,10 +16,10 @@ use super::responses::{encode_error, encode_error_body, encode_success};
 // it is not a pause.
 #[cfg(all(unix, not(test)))]
 const AGENT_PROMPT_ECHO_TIMEOUT: Duration = Duration::from_secs(5);
-// Unit tests echo by hand right after reading the text; one second covers a loaded test host
-// and keeps the no-echo cases short.
+// Unit tests step the echo deadline explicitly (`test_expire_submission_echo`) and never wait
+// it out; the value only bounds a test that hangs.
 #[cfg(all(unix, test))]
-const AGENT_PROMPT_ECHO_TIMEOUT: Duration = Duration::from_secs(1);
+const AGENT_PROMPT_ECHO_TIMEOUT: Duration = Duration::from_secs(30);
 // An agent that drops input while it starts up gets the text once more before the prompt is
 // reported lost.
 #[cfg(unix)]
@@ -29,6 +29,9 @@ const AGENT_PROMPT_ECHO_RETRIES: u8 = 1;
 #[cfg(windows)]
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
+// A prompt doubled by a late echo also maps to `agent_prompt_lost`: in both cases the text
+// was not submitted and Enter was not sent, and the message tells the two apart. A separate
+// code would extend the documented API error list for the same caller reaction.
 #[cfg(unix)]
 fn is_agent_prompt_lost(err: &std::io::Error) -> bool {
     err.get_ref()
@@ -650,6 +653,14 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Ends the current echo attempt as if its deadline had passed.
+    fn expire_echo_on_pane(app: &App, pane_id: crate::layout::PaneId) {
+        app.lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .test_expire_submission_echo();
+    }
+
+    #[cfg(unix)]
     fn prompted_agent_test_app(agent: Agent) -> (App, crate::layout::PaneId) {
         let mut app = app_with_agent();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
@@ -768,6 +779,7 @@ mod tests {
             Some(Bytes::from(text.as_bytes().to_vec()))
         );
         // The agent dropped the first write; the same text is written once more.
+        expire_echo_on_pane(&app, pane_id);
         assert_eq!(
             next_pane_input(&mut rx).await,
             Some(Bytes::from(text.as_bytes().to_vec()))
@@ -811,13 +823,54 @@ mod tests {
                 next_pane_input(&mut rx).await,
                 Some(Bytes::from_static(b"never shown"))
             );
+            expire_echo_on_pane(&app, pane_id);
         }
         let response = response_rx
-            .recv_timeout(AGENT_PROMPT_ECHO_TIMEOUT * 4)
+            .recv_timeout(AGENT_PROMPT_ECHO_TIMEOUT)
             .expect("agent prompt reports the lost text");
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "agent_prompt_lost");
         assert!(rx.try_recv().is_err(), "a lost prompt must not send Enter");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_prompt_withholds_enter_when_late_echo_doubles_text() {
+        let (mut app, pane_id) = prompted_agent_test_app(Agent::Claude);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response_rx = start_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "review it".into(),
+                wait: None,
+            },
+        );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"review it"))
+        );
+        expire_echo_on_pane(&app, pane_id);
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"review it"))
+        );
+        // The agent was busy with startup hooks and draws both writes at once.
+        echo_on_pane(&app, pane_id, b"> review itreview it");
+        let response = response_rx
+            .recv_timeout(AGENT_PROMPT_ECHO_TIMEOUT)
+            .expect("agent prompt reports the doubled text");
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_prompt_lost");
+        assert!(
+            error.error.message.contains("twice"),
+            "{}",
+            error.error.message
+        );
+        assert!(rx.try_recv().is_err(), "doubled text must not be submitted");
     }
 
     #[tokio::test]

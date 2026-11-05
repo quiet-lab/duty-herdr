@@ -87,26 +87,43 @@ enum PtyIoDataCommand {
 /// The probe runs on the actor thread right after a PTY read has been parsed into the
 /// terminal, so the wait is driven by child output, not by a clock. `timeout` only bounds
 /// how long one write may stay unconfirmed; it never delays a confirmed submission.
+///
+/// User input keeps flowing to the PTY while the echo is awaited, see
+/// `PtyIoActorRunner::drain_user_input_during_submission`.
 pub(crate) struct SubmissionEcho {
-    pub(crate) probe: Box<dyn FnMut() -> bool + Send + 'static>,
+    /// Returns how many new copies of the text are on screen compared with the moment
+    /// before the first write; zero means not echoed yet.
+    pub(crate) probe: Box<dyn FnMut() -> usize + Send + 'static>,
     pub(crate) timeout: Duration,
     /// How many times the text is written again after an unconfirmed attempt.
     pub(crate) retries: u8,
 }
 
-/// Error payload for a submission whose text never appeared on screen.
+/// Error payload for a submission that was not confirmed on screen; Enter was not written.
 #[derive(Debug)]
 pub(crate) struct SubmissionEchoMissing {
     pub(crate) attempts: u8,
+    /// The text appeared more than once after a retry: the program echoed the first write
+    /// late, so its input line holds the text twice.
+    pub(crate) doubled: bool,
 }
 
 impl std::fmt::Display for SubmissionEchoMissing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "submitted text did not appear on screen after {} attempt(s); Enter was not sent",
-            self.attempts
-        )
+        if self.doubled {
+            write!(
+                f,
+                "submitted text appeared on screen twice after {} attempts (the first write \
+                 was echoed late); Enter was not sent",
+                self.attempts
+            )
+        } else {
+            write!(
+                f,
+                "submitted text did not appear on screen after {} attempt(s); Enter was not sent",
+                self.attempts
+            )
+        }
     }
 }
 
@@ -118,6 +135,10 @@ enum PtyIoControlCommand {
     ForegroundProcessGroup(std_mpsc::Sender<Option<u32>>),
     RollbackHandoff(std_mpsc::Sender<std::io::Result<()>>),
     ReleaseAfterCommit(std_mpsc::Sender<std::io::Result<()>>),
+    /// Expires the current echo wait as if its deadline had passed, so tests step through
+    /// retries without waiting on the clock.
+    #[cfg(test)]
+    ExpireSubmissionEcho,
     Shutdown,
 }
 
@@ -424,6 +445,18 @@ impl PtyIoActorHandle {
         }
     }
 
+    /// Steps the active echo wait past its deadline; see `ExpireSubmissionEcho`.
+    #[cfg(test)]
+    pub(crate) fn expire_submission_echo(&self) {
+        if self
+            .control_tx
+            .send(PtyIoControlCommand::ExpireSubmissionEcho)
+            .is_ok()
+        {
+            self.wake_actor();
+        }
+    }
+
     fn wake_actor(&self) {
         if let Err(err) = self.wake.wake() {
             debug!(err = %err, "failed to wake PTY actor");
@@ -477,6 +510,7 @@ impl PtyIoActor {
             pending_writes: VecDeque::new(),
             current_write_offset: 0,
             active_submission: None,
+            deferred_data_command: None,
             pending_handoff: None,
             wake_read_fd: wake_pipe.read_fd,
             controls,
@@ -511,6 +545,9 @@ struct PtyIoActorRunner {
     pending_writes: VecDeque<PendingWrite>,
     current_write_offset: usize,
     active_submission: Option<ActiveSubmission>,
+    /// A data command taken off the queue while a submission was active that has to wait
+    /// for it; it runs before anything still queued.
+    deferred_data_command: Option<PtyIoDataCommand>,
     pending_handoff: Option<std_mpsc::Sender<std::io::Result<()>>>,
     wake_read_fd: OwnedFd,
     controls: Arc<Mutex<SharedPtyControls>>,
@@ -578,6 +615,7 @@ impl PtyIoActorRunner {
             }
 
             self.apply_pending_controls();
+            let submission_was_active = self.active_submission.is_some();
 
             if !self.pending_writes.is_empty() {
                 match self.flush_pending_writes_once() {
@@ -590,7 +628,11 @@ impl PtyIoActorRunner {
                 }
             }
             self.schedule_submission_enter();
-            if self.active_submission.is_none() && self.pending_handoff.is_some() {
+            // Commands queued behind a submission that just completed already had their wake
+            // drained; take them now instead of sleeping until the idle poll.
+            if self.active_submission.is_none()
+                && (submission_was_active || self.pending_handoff.is_some())
+            {
                 continue;
             }
 
@@ -651,7 +693,13 @@ impl PtyIoActorRunner {
         if self.drain_control_commands() {
             return true;
         }
-        if self.active_submission.is_some() {
+        if let Some(submission) = self.active_submission.as_ref() {
+            if submission.echo.is_some()
+                && self.pending_handoff.is_none()
+                && self.deferred_data_command.is_none()
+            {
+                self.drain_user_input_during_submission();
+            }
             return false;
         }
         if let Some(reply) = self.pending_handoff.take() {
@@ -681,10 +729,45 @@ impl PtyIoActorRunner {
         should_exit
     }
 
+    /// Takes the deferred command first so queue order is kept.
+    fn try_next_data_command(&mut self) -> Result<PtyIoDataCommand, DataTryRecvError> {
+        match self.deferred_data_command.take() {
+            Some(command) => Ok(command),
+            None => self.data_rx.try_recv(),
+        }
+    }
+
+    /// Writes user input that arrives while an echo-confirmed submission waits for its echo.
+    ///
+    /// The echo wait is bounded by seconds, not by the fixed 300 ms pause, so holding keys
+    /// back for it would freeze the pane, Ctrl-C included. User bytes are queued behind the
+    /// submitted text and go out at once; the submission keeps waiting for its echo. If the
+    /// user clears the input line, the echo does not come, the text is written once more
+    /// and Enter is withheld unless that copy is echoed. The first queued command that is not
+    /// plain user input (another submission) stops the drain and waits in
+    /// `deferred_data_command`, so later input stays ordered behind it. A closed queue is left
+    /// for the regular drain after the submission completes.
+    fn drain_user_input_during_submission(&mut self) {
+        loop {
+            match self.data_rx.try_recv() {
+                Ok(PtyIoDataCommand::WriteUserInput(bytes)) => {
+                    if self.state == ActorState::Running {
+                        self.enqueue_write(bytes);
+                    }
+                }
+                Ok(command) => {
+                    self.deferred_data_command = Some(command);
+                    break;
+                }
+                Err(DataTryRecvError::Empty | DataTryRecvError::Disconnected) => break,
+            }
+        }
+    }
+
     fn drain_data_commands(&mut self) -> bool {
         let mut should_exit = false;
         loop {
-            match self.data_rx.try_recv() {
+            match self.try_next_data_command() {
                 Ok(command) => {
                     if self.handle_data_command(command) {
                         should_exit = true;
@@ -786,6 +869,15 @@ impl PtyIoActorRunner {
                 let _ = reply.send(Ok(()));
                 return true;
             }
+            #[cfg(test)]
+            PtyIoControlCommand::ExpireSubmissionEcho => {
+                if matches!(
+                    self.active_submission.as_ref().map(|s| &s.phase),
+                    Some(SubmissionPhase::AwaitingEcho(_))
+                ) {
+                    self.expire_submission_echo();
+                }
+            }
             PtyIoControlCommand::Shutdown => return true,
         }
         false
@@ -854,7 +946,7 @@ impl PtyIoActorRunner {
     }
 
     fn drain_pre_quiesce_commands(&mut self) {
-        while let Ok(command) = self.data_rx.try_recv() {
+        while let Ok(command) = self.try_next_data_command() {
             if self.handle_data_command(command) {
                 break;
             }
@@ -960,6 +1052,11 @@ impl PtyIoActorRunner {
     }
 
     /// Writes Enter once the echo probe sees the submitted text on screen.
+    ///
+    /// After a retry the program may echo both writes: the first one late, then the copy.
+    /// Two or more new copies mean the input line holds the text twice, so Enter is withheld
+    /// and the submission fails instead of sending the doubled text. A first attempt that
+    /// shows several copies (a short text also printed by the program) still confirms.
     fn observe_submission_echo(&mut self) {
         let Some(submission) = self.active_submission.as_mut() else {
             return;
@@ -970,9 +1067,27 @@ impl PtyIoActorRunner {
         let Some(echo) = submission.echo.as_mut() else {
             return;
         };
-        if (echo.probe)() {
-            self.start_submission_enter();
+        let copies = (echo.probe)();
+        if copies == 0 {
+            return;
         }
+        if submission.attempts > 1 && copies > 1 {
+            if let Some(submission) = self.active_submission.take() {
+                warn!(
+                    pane = self.pane_id,
+                    attempts = submission.attempts,
+                    "submitted text appeared twice after a retry; Enter withheld"
+                );
+                let _ = submission
+                    .reply
+                    .send(Err(std::io::Error::other(SubmissionEchoMissing {
+                        attempts: submission.attempts,
+                        doubled: true,
+                    })));
+            }
+            return;
+        }
+        self.start_submission_enter();
     }
 
     fn start_submission_enter(&mut self) {
@@ -991,9 +1106,10 @@ impl PtyIoActorRunner {
     }
 
     /// Handles an echo deadline: writes the text once more while retries remain, otherwise
-    /// fails the submission without Enter. A late echo of an earlier attempt cannot be told
-    /// apart from the retried one, so a slow program may show the text twice; Enter is still
-    /// withheld when no attempt is confirmed in time.
+    /// fails the submission without Enter. A late echo of the first write that lands together
+    /// with the copy is caught by `observe_submission_echo`. One drawn alone before the copy
+    /// cannot be told apart from the copy's echo: it confirms the submission and the program
+    /// still receives the text twice ahead of Enter.
     fn expire_submission_echo(&mut self) {
         let Some(submission) = self.active_submission.as_mut() else {
             return;
@@ -1019,6 +1135,7 @@ impl PtyIoActorRunner {
                 .reply
                 .send(Err(std::io::Error::other(SubmissionEchoMissing {
                     attempts: submission.attempts,
+                    doubled: false,
                 })));
         }
     }
@@ -1069,6 +1186,11 @@ impl PtyIoActorRunner {
     fn close_input_queue(&mut self) {
         self.data_rx.close();
         self.fail_active_submission(input_submission_closed_error());
+        if let Some(PtyIoDataCommand::SubmitUserInput { reply, .. }) =
+            self.deferred_data_command.take()
+        {
+            let _ = reply.send(Err(input_submission_closed_error()));
+        }
         while let Some(command) = self.data_rx.blocking_recv() {
             if let PtyIoDataCommand::SubmitUserInput { reply, .. } = command {
                 let _ = reply.send(Err(input_submission_closed_error()));
@@ -1253,6 +1375,7 @@ mod tests {
             pending_writes: VecDeque::new(),
             current_write_offset: 0,
             active_submission: None,
+            deferred_data_command: None,
             pending_handoff: None,
             wake_read_fd: wake_pipe.read_fd,
             controls: Arc::new(Mutex::new(SharedPtyControls::default())),
@@ -1360,16 +1483,128 @@ mod tests {
         ));
     }
 
-    /// Probe that confirms once the child has written `marker` back to the actor.
+    /// Probe that counts the copies of `marker` the child has written back to the actor.
     fn echo_marker_probe(
         read_rx: std_mpsc::Receiver<Bytes>,
         marker: &'static [u8],
-    ) -> Box<dyn FnMut() -> bool + Send + 'static> {
+    ) -> Box<dyn FnMut() -> usize + Send + 'static> {
         let mut seen = Vec::new();
         Box::new(move || {
             seen.extend(read_rx.try_iter().flat_map(|bytes| bytes.to_vec()));
-            seen.windows(marker.len()).any(|window| window == marker)
+            let mut copies = 0;
+            let mut rest = seen.as_slice();
+            while let Some(at) = rest
+                .windows(marker.len())
+                .position(|window| window == marker)
+            {
+                copies += 1;
+                rest = &rest[at + marker.len()..];
+            }
+            copies
         })
+    }
+
+    // Bounds a wait that the test ends by echoing or by `expire_submission_echo`; it is a
+    // hang guard, not a step of the test.
+    const ECHO_HANG_GUARD: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn actor_writes_user_input_while_awaiting_echo() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        let completion = handle
+            .queue_echo_confirmed_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                SubmissionEcho {
+                    probe: echo_marker_probe(read_rx, b"prompt"),
+                    timeout: ECHO_HANG_GUARD,
+                    retries: 1,
+                },
+            )
+            .expect("submission queues");
+        let mut prompt = [0; 6];
+        peer.read_exact(&mut prompt).expect("peer receives prompt");
+        assert_eq!(&prompt, b"prompt");
+
+        // Ctrl-C reaches the program while Enter still waits for the echo; the peer read
+        // timeout (1 s) is far below the echo deadline.
+        handle
+            .try_write_user_input(Bytes::from_static(b"\x03"))
+            .expect("user input queues");
+        let mut interrupt = [0; 1];
+        peer.read_exact(&mut interrupt)
+            .expect("user input is written without waiting for the echo");
+        assert_eq!(interrupt, *b"\x03");
+
+        // A second submission queued meanwhile waits for the first, and input queued after
+        // it stays behind it.
+        let second = handle
+            .queue_user_input_submission(
+                Bytes::from_static(b"second"),
+                Bytes::new(),
+                Duration::ZERO,
+            )
+            .expect("second submission queues");
+        handle
+            .try_write_user_input(Bytes::from_static(b"x"))
+            .expect("user input queues");
+        peer.write_all(b"> prompt").expect("peer echoes prompt");
+        let mut rest = [0; 8];
+        peer.read_exact(&mut rest).expect("peer receives the rest");
+        assert_eq!(&rest, b"\rsecondx");
+        completion
+            .recv_timeout(ECHO_HANG_GUARD)
+            .expect("actor reports submission")
+            .expect("echoed submission completes");
+        second
+            .recv_timeout(ECHO_HANG_GUARD)
+            .expect("actor reports second submission")
+            .expect("second submission completes");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn actor_withholds_enter_when_retry_doubles_text() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        let completion = handle
+            .queue_echo_confirmed_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                SubmissionEcho {
+                    probe: echo_marker_probe(read_rx, b"prompt"),
+                    timeout: ECHO_HANG_GUARD,
+                    retries: 1,
+                },
+            )
+            .expect("submission queues");
+        let mut prompt = [0; 6];
+        peer.read_exact(&mut prompt).expect("peer receives prompt");
+        handle.expire_submission_echo();
+        peer.read_exact(&mut prompt)
+            .expect("peer receives the retried prompt");
+        assert_eq!(&prompt, b"prompt");
+        // The program was busy, not deaf: it draws both writes in one frame.
+        peer.write_all(b"> promptprompt")
+            .expect("peer echoes both writes");
+        let err = completion
+            .recv_timeout(ECHO_HANG_GUARD)
+            .expect("actor reports submission")
+            .expect_err("doubled submission fails");
+        let failure = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<SubmissionEchoMissing>())
+            .expect("echo failure");
+        assert!(failure.doubled);
+        assert_eq!(failure.attempts, 2);
+        // The actor has replied and writes nothing after a failed submission.
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("peer timeout");
+        let mut extra = [0; 1];
+        assert!(
+            peer.read(&mut extra).is_err(),
+            "doubled text must not be submitted"
+        );
+        handle.shutdown();
     }
 
     #[test]
@@ -1429,6 +1664,7 @@ mod tests {
             .and_then(|inner| inner.downcast_ref::<SubmissionEchoMissing>())
             .expect("echo-missing error");
         assert_eq!(missing.attempts, 2);
+        assert!(!missing.doubled);
         peer.set_read_timeout(Some(Duration::from_millis(100)))
             .expect("peer timeout");
         let mut extra = [0; 1];
@@ -1928,6 +2164,7 @@ mod tests {
             pending_writes: VecDeque::new(),
             current_write_offset: 0,
             active_submission: None,
+            deferred_data_command: None,
             pending_handoff: None,
             wake_read_fd: wake_pipe.read_fd,
             controls: Arc::clone(&controls),
@@ -2065,6 +2302,7 @@ mod tests {
             pending_writes: VecDeque::new(),
             current_write_offset: 0,
             active_submission: None,
+            deferred_data_command: None,
             pending_handoff: None,
             wake_read_fd: fd::create_wake_pipe().expect("wake pipe").read_fd,
             controls: Arc::new(Mutex::new(SharedPtyControls::default())),
