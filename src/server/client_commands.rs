@@ -256,6 +256,15 @@ mod tests {
         );
 
         assert_eq!(
+            actual.remove("workspace.create_child").as_deref(),
+            Some("1ac1d673c50832f7d3b182650e88a913ab4d9f6c7d58af03e6cd52a90e883bd0")
+        );
+        assert_eq!(
+            actual.remove("workspace.set_parent").as_deref(),
+            Some("13c84c064a6f96dede13356fece244391f74bdc362e9f3bf25af73b1ca8b8b7f")
+        );
+
+        assert_eq!(
             actual, expected,
             "an existing endpoint method changed shape; add load-bearing behavior as a new advertised method or explicitly gate new fields"
         );

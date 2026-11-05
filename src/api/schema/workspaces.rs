@@ -47,6 +47,22 @@ cli_params! {
     }
 }
 
+/// `workspace.create` with a required parent. The frozen `workspace.create` shape
+/// stays unchanged: an older server rejects this method instead of ignoring the parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceCreateChildParams {
+    pub parent_workspace_id: String,
+    #[serde(flatten)]
+    pub create: WorkspaceCreateParams,
+}
+
+/// `parent_workspace_id: null` clears the link.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct WorkspaceSetParentParams {
+    pub workspace_id: String,
+    pub parent_workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkspaceMoveParams {
     pub workspace_id: String,
@@ -94,6 +110,8 @@ pub struct WorkspaceInfo {
     pub tokens: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorkspaceWorktreeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

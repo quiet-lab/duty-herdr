@@ -491,6 +491,9 @@ impl HeadlessServer {
             }
 
             self.app.sync_focus_events();
+            if !self.app.state.released_workspace_ids.is_empty() {
+                self.app.release_orphaned_workspaces();
+            }
             self.app.sync_session_save_schedule();
 
             // 4. Accept new client connections.

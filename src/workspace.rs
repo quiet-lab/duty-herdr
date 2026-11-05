@@ -38,6 +38,28 @@ pub struct WorktreeSpaceMembership {
     pub is_linked_worktree: bool,
 }
 
+/// Clears parent links that break the tree invariants; returns the affected ids.
+pub(crate) fn clear_invalid_parent_links(workspaces: &mut [Workspace]) -> Vec<String> {
+    if workspaces
+        .iter()
+        .all(|workspace| workspace.parent_workspace_id.is_none())
+    {
+        return Vec::new();
+    }
+    let nodes = workspaces
+        .iter()
+        .map(Workspace::tree_node)
+        .collect::<Vec<_>>();
+    let invalid = crate::workspace_tree::invalid_parent_links(&nodes);
+    invalid
+        .into_iter()
+        .map(|index| {
+            workspaces[index].parent_workspace_id = None;
+            workspaces[index].id.clone()
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
     pub workspace_id: String,
@@ -194,6 +216,8 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
+    /// Explicit parent workspace id; one nesting level, see `crate::workspace_tree`.
+    pub parent_workspace_id: Option<String>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
@@ -260,6 +284,7 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space: None,
+            parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -412,6 +437,7 @@ impl Workspace {
                 cached_git_ahead_behind: None,
                 cached_git_space,
                 worktree_space: None,
+                parent_workspace_id: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
@@ -1080,6 +1106,18 @@ impl Workspace {
         self.cached_git_space.as_ref()
     }
 
+    pub(crate) fn tree_node(&self) -> crate::workspace_tree::WorkspaceNode<'_> {
+        crate::workspace_tree::WorkspaceNode {
+            id: &self.id,
+            worktree_key: self.worktree_space.as_ref().map(|space| space.key.as_str()),
+            is_linked_worktree: self
+                .worktree_space
+                .as_ref()
+                .is_some_and(|space| space.is_linked_worktree),
+            parent_id: self.parent_workspace_id.as_deref(),
+        }
+    }
+
     pub fn worktree_space(&self) -> Option<&WorktreeSpaceMembership> {
         self.worktree_space.as_ref()
     }
@@ -1201,6 +1239,7 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
+            parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,

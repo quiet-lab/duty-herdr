@@ -692,6 +692,8 @@ impl AppState {
             self.workspaces.remove(*idx);
         }
         self.remove_unattached_terminal_ids(terminal_ids);
+        let released = crate::workspace::clear_invalid_parent_links(&mut self.workspaces);
+        self.released_workspace_ids.extend(released);
         if self.workspaces.is_empty() {
             self.active = None;
             self.selected = 0;
@@ -2867,6 +2869,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["a", "b", "c"]
         );
+    }
+
+    #[test]
+    fn move_workspace_block_keeps_parent_links() {
+        let mut state = app_with_workspaces(&["parent", "child", "tail"]);
+        let ids = state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect::<Vec<_>>();
+        state.workspaces[1].parent_workspace_id = Some(ids[0].clone());
+
+        assert!(state.move_workspace_block(&ids[..2], None));
+
+        assert_eq!(state.workspaces[0].id, ids[2]);
+        assert_eq!(
+            state.workspaces[2].parent_workspace_id,
+            Some(ids[0].clone())
+        );
+    }
+
+    #[test]
+    fn closing_parent_releases_children_as_roots() {
+        let mut state = app_with_workspaces(&["parent", "child", "other"]);
+        let parent_id = state.workspaces[0].id.clone();
+        let child_id = state.workspaces[1].id.clone();
+        state.workspaces[1].parent_workspace_id = Some(parent_id);
+        state.selected = 0;
+
+        state.close_selected_workspace();
+
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(state.workspaces[0].id, child_id);
+        assert_eq!(state.workspaces[0].parent_workspace_id, None);
+        assert_eq!(state.released_workspace_ids, [child_id]);
+    }
+
+    #[test]
+    fn closing_child_keeps_parent_and_siblings() {
+        let mut state = app_with_workspaces(&["parent", "child", "sibling"]);
+        let parent_id = state.workspaces[0].id.clone();
+        state.workspaces[1].parent_workspace_id = Some(parent_id.clone());
+        state.workspaces[2].parent_workspace_id = Some(parent_id.clone());
+        state.selected = 1;
+
+        state.close_selected_workspace();
+
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(state.workspaces[1].parent_workspace_id, Some(parent_id));
+        assert!(state.released_workspace_ids.is_empty());
     }
 
     #[test]

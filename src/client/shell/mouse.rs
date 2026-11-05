@@ -526,15 +526,16 @@ impl ClientShellState {
             .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
             .filter(|hit| {
                 hit.group_toggle.as_ref().is_none_or(|(_, key)| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| {
-                            workspace.worktree.as_ref().is_some_and(|worktree| {
-                                worktree.key == *key && !worktree.is_linked_worktree
+                    *key == sidebar::explicit_group_key(&hit.workspace_id)
+                        || snapshot
+                            .workspaces
+                            .iter()
+                            .find(|workspace| {
+                                workspace.worktree.as_ref().is_some_and(|worktree| {
+                                    worktree.key == *key && !worktree.is_linked_worktree
+                                })
                             })
-                        })
-                        .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
+                            .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
                 })
             })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
@@ -594,11 +595,14 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == source_workspace_id)?;
-        if source
-            .worktree
-            .as_ref()
-            .is_some_and(|worktree| worktree.is_linked_worktree)
-        {
+        let is_child = |workspace: &ClientShellWorkspace| {
+            workspace.parent_workspace_id.is_some()
+                || workspace
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|worktree| worktree.is_linked_worktree)
+        };
+        if is_child(source) {
             return None;
         }
         if before_workspace_id == Some(source_workspace_id) {
@@ -607,12 +611,7 @@ impl ClientShellState {
         let roots = snapshot
             .workspaces
             .iter()
-            .filter(|workspace| {
-                !workspace
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            })
+            .filter(|workspace| !is_child(workspace))
             .collect::<Vec<_>>();
         let source_position = roots
             .iter()
@@ -628,11 +627,39 @@ impl ClientShellState {
                 .position(|workspace| workspace.workspace_id == target)?,
             None => remaining.len(),
         };
-        if source.worktree.is_none() && insert_position == source_position {
+        let worktree_key = source
+            .worktree
+            .as_ref()
+            .map(|worktree| worktree.key.as_str());
+        let in_block = |workspace: &ClientShellWorkspace| {
+            workspace
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.key.as_str())
+                == worktree_key
+                && worktree_key.is_some()
+        };
+        let block_root_ids = snapshot
+            .workspaces
+            .iter()
+            .filter(|workspace| {
+                workspace.workspace_id == source.workspace_id || in_block(workspace)
+            })
+            .map(|workspace| workspace.workspace_id.as_str())
+            .collect::<HashSet<_>>();
+        let has_block = snapshot.workspaces.iter().any(|workspace| {
+            workspace.workspace_id != source.workspace_id
+                && (in_block(workspace)
+                    || workspace
+                        .parent_workspace_id
+                        .as_deref()
+                        .is_some_and(|parent| block_root_ids.contains(parent)))
+        });
+        if source.worktree.is_none() && !has_block && insert_position == source_position {
             return None;
         }
 
-        if let Some(worktree) = source.worktree.as_ref() {
+        if source.worktree.is_some() || has_block {
             let workspace_ids = std::iter::once(source.workspace_id.clone())
                 .chain(
                     snapshot
@@ -640,10 +667,11 @@ impl ClientShellState {
                         .iter()
                         .filter(|workspace| workspace.workspace_id != source.workspace_id)
                         .filter(|workspace| {
-                            workspace
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|candidate| candidate.key == worktree.key)
+                            in_block(workspace)
+                                || workspace
+                                    .parent_workspace_id
+                                    .as_deref()
+                                    .is_some_and(|parent| block_root_ids.contains(parent))
                         })
                         .map(|workspace| workspace.workspace_id.clone()),
                 )

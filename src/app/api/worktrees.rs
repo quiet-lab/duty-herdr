@@ -384,6 +384,8 @@ impl App {
             if emit_update {
                 self.emit_workspace_updated(ws_idx);
             }
+            // Joining a worktree group ends an explicit link that would add a second level.
+            self.release_orphaned_workspaces();
         }
     }
 

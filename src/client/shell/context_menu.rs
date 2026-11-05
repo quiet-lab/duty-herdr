@@ -2,6 +2,23 @@ use super::*;
 
 impl ClientContextMenuOverlay {
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
+        let mut items = self.base_items();
+        if let ClientContextMenuTarget::Workspace {
+            has_worktree_children: false,
+            has_explicit_children: true,
+            collapsed,
+            ..
+        } = &self.target
+        {
+            items.push(ClientContextMenuItem {
+                label: if *collapsed { "Expand" } else { "Collapse" },
+                action: ClientContextMenuAction::ToggleGroup,
+            });
+        }
+        items
+    }
+
+    fn base_items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
         let item = |label, action| ClientContextMenuItem { label, action };
@@ -105,15 +122,20 @@ impl ClientShellState {
                 })
         });
         let close_group = super::sidebar::workspace_close_is_group(snapshot, workspace);
-        let collapsed = worktree.is_some_and(|worktree| {
-            self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
-        });
+        let has_explicit_children = super::sidebar::has_explicit_children(snapshot, workspace);
+        let collapsed = snapshot
+            .workspaces
+            .iter()
+            .position(|candidate| candidate.workspace_id == workspace_id)
+            .and_then(|index| super::sidebar::parent_group_key(snapshot, index))
+            .is_some_and(|key| self.group_is_collapsed(&self.active_endpoint_id, &key));
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace {
                 workspace_id,
                 is_git: worktree.is_some() || workspace.branch.is_some(),
                 is_linked_worktree: worktree.is_some_and(|worktree| worktree.is_linked_worktree),
                 has_worktree_children,
+                has_explicit_children,
                 close_group,
                 collapsed,
             },
@@ -265,9 +287,8 @@ impl ClientShellState {
                     snapshot
                         .workspaces
                         .iter()
-                        .find(|workspace| workspace.workspace_id == workspace_id)
-                        .and_then(|workspace| workspace.worktree.as_ref())
-                        .map(|worktree| worktree.key.clone())
+                        .position(|workspace| workspace.workspace_id == workspace_id)
+                        .and_then(|index| super::sidebar::parent_group_key(snapshot, index))
                 });
                 if let Some(key) = key {
                     let endpoint_id = self.active_endpoint_id.clone();

@@ -62,6 +62,7 @@ mod thread_spawn;
 mod ui;
 mod update;
 mod workspace;
+mod workspace_tree;
 mod worktree;
 
 const DEFAULT_CONFIG: &str = r##"# herdr configuration
@@ -157,6 +158,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # remove_worktree = ""  # optional, unset by default; opens confirmation
 # rename_workspace = "prefix+shift+w"
 # close_workspace = "prefix+shift+d"
+# move_workspace_up = ""   # optional, unset by default
+# move_workspace_down = "" # optional, unset by default
 # previous_workspace = "" # optional, unset by default
 # next_workspace = ""     # optional, unset by default
 # previous_agent = ""     # optional, unset by default
