@@ -111,6 +111,7 @@ pub enum AgentSidebarToken {
     Machine,
     Workspace,
     Tab,
+    FocusedTab,
     Pane,
     Agent,
     TerminalTitle,
@@ -275,6 +276,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Machine => "machine".into(),
         AgentSidebarToken::Workspace => "workspace".into(),
         AgentSidebarToken::Tab => "tab".into(),
+        AgentSidebarToken::FocusedTab => "focused_tab".into(),
         AgentSidebarToken::Pane => "pane".into(),
         AgentSidebarToken::Agent => "agent".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
@@ -334,6 +336,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("machine", Self::Machine),
                 ("workspace", Self::Workspace),
                 ("tab", Self::Tab),
+                ("focused_tab", Self::FocusedTab),
                 ("pane", Self::Pane),
                 ("agent", Self::Agent),
                 ("terminal_title", Self::TerminalTitle),
@@ -607,6 +610,37 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "$jj", bold = tru
         let (token, style) = config.ui.sidebar.spaces.rows[1][0].parts();
         assert_eq!(token, &SpaceSidebarToken::Custom("jj".into()));
         assert_eq!(style.bold, Some(true));
+    }
+
+    #[test]
+    fn parses_focused_tab_as_plain_and_styled_text_token() {
+        let input = r##"
+[agents]
+rows = [["state_icon", "tab"], ["focused_tab"], [{ token = "focused_tab", fg = "#888", rules = [{ equals = "logs", fg = "#f00" }] }]]
+"##;
+        let config: SidebarConfig = toml::from_str(input).expect("focused_tab sidebar config");
+        assert_eq!(config.agents.rows[1], vec![AgentSidebarToken::FocusedTab]);
+        let token = &config.agents.rows[2][0];
+        let (base, style) = token.parts();
+        assert_eq!(base, &AgentSidebarToken::FocusedTab);
+        assert_eq!(
+            style.fg.unwrap().ratatui(),
+            ratatui::style::Color::Rgb(0x88, 0x88, 0x88)
+        );
+        assert_eq!(
+            token
+                .style_for_value("logs")
+                .and_then(|style| style.fg)
+                .map(SidebarTokenColor::ratatui),
+            Some(ratatui::style::Color::Rgb(0xff, 0x00, 0x00))
+        );
+        assert_eq!(
+            token.style_for_value("build").and_then(|style| style.fg),
+            style.fg
+        );
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains("focused_tab"));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
     }
 
     #[test]

@@ -273,6 +273,13 @@ pub(super) fn agent_row(
     let tab_label = tab
         .filter(|tab| tab_count > 1 || tab.custom_label)
         .map(|tab| tab.label.as_str());
+    // Label of the tab currently selected in the agent's workspace; the snapshot's
+    // `active_tab_id` already reflects this client's own tab selection.
+    let focused_tab_label = snapshot
+        .tabs
+        .iter()
+        .find(|candidate| candidate.tab_id == workspace.active_tab_id)
+        .map(|tab| tab.label.as_str());
     let agent_label = agent
         .display_agent
         .as_deref()
@@ -299,6 +306,7 @@ pub(super) fn agent_row(
             machine,
             workspace: &workspace.label,
             tab: tab_label,
+            focused_tab: focused_tab_label,
             pane: agent
                 .title
                 .as_deref()
