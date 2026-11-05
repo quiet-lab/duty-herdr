@@ -59,13 +59,13 @@ case "$last" in
         esac
         if [ "$TEST_MODE" = offline ]; then echo 'test remote connection failed' >&2; exit 255; fi
         printf 'login banner\n'
-        PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" exec /bin/sh -c "$last" ;;
+        PATH="$TEST_ROOT/remote bin:$TEST_ROOT/remote shadow:/usr/bin:/bin" exec /bin/sh -c "$last" ;;
     '/bin/sh -s')
         script=$(cat)
         printf 'login banner\n'
         case "$script" in
             *'uname -s'*) printf 'herdr-remote-output-ready:1\n'; uname -s; uname -m ;;
-            *) PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" exec /bin/sh -c "$script" ;;
+            *) PATH="$TEST_ROOT/remote bin:$TEST_ROOT/remote shadow:/usr/bin:/bin" exec /bin/sh -c "$script" ;;
         esac ;;
     *) echo "unexpected command: $last" >&2; exit 2 ;;
 esac
@@ -101,6 +101,19 @@ impl Harness {
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_herdr"), root.join("remote herdr")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
+        // Stub that shadows any herdr installed on the host, so remote discovery
+        // never falls through to a real binary in /usr/bin.
+        fs::create_dir_all(root.join("remote shadow")).unwrap();
+        fs::write(
+            root.join("remote shadow/herdr"),
+            "#!/bin/sh\necho 'test shadow: host herdr must not be used' >&2\nexit 2\n",
+        )
+        .unwrap();
+        fs::set_permissions(
+            root.join("remote shadow/herdr"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
         let remote_wrapper = root.join("remote bin/herdr");
         fs::write(
             &remote_wrapper,
