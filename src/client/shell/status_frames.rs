@@ -33,7 +33,7 @@ pub(super) fn frame_index(tick: u64, offset: u64, frames: usize) -> usize {
 /// identifier. Deterministic across restarts (no `RandomState`) and free of
 /// allocation. The endpoint key keeps rows of different machines with the same
 /// identifier apart.
-pub(super) fn row_phase(endpoint: &str, id: &str) -> u64 {
+pub(super) fn row_phase(endpoint: &str, id: &str) -> Option<u64> {
     const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0100_0000_01b3;
     let mut hash = BASIS;
@@ -45,7 +45,14 @@ pub(super) fn row_phase(endpoint: &str, id: &str) -> u64 {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(PRIME);
     }
-    hash
+    // Final mix (splitmix64) so that the high and low halves, used for the
+    // speed and the offset, are well distributed even for short similar ids.
+    hash ^= hash >> 30;
+    hash = hash.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    hash ^= hash >> 27;
+    hash = hash.wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash ^= hash >> 31;
+    Some(hash)
 }
 
 /// Period multiplier of a row in thousandths, uniform in
@@ -139,7 +146,21 @@ impl ShellStatusIcons {
     fn max_spread_permille(&self) -> u16 {
         match self.configured.frame_phase {
             StatusFramePhase::Synced => 0,
-            StatusFramePhase::PerRow => self.configured.frame_speed_spread.max_permille(),
+            StatusFramePhase::PerRow => [
+                AgentStatus::Idle,
+                AgentStatus::Working,
+                AgentStatus::Blocked,
+                AgentStatus::Done,
+                AgentStatus::Unknown,
+            ]
+            .into_iter()
+            .filter(|status| {
+                self.frames_for(*status)
+                    .is_some_and(StatusIconFrames::is_animated)
+            })
+            .map(|status| self.spread_permille(status))
+            .max()
+            .unwrap_or(0),
         }
     }
 
@@ -196,12 +217,14 @@ impl ShellStatusIcons {
     }
 
     /// The frame of `status` for a row with the phase seed `phase`; the seed is
-    /// ignored unless `frame_phase = "per_row"`.
-    pub(super) fn override_for(&self, status: AgentStatus, phase: u64) -> Option<&str> {
+    /// ignored unless `frame_phase = "per_row"`, and `None` (an aggregate
+    /// without a row) always shows the base clock.
+    pub(super) fn override_for(&self, status: AgentStatus, phase: Option<u64>) -> Option<&str> {
         let frames = self.frames_for(status)?;
-        let (offset, speed) = match self.configured.frame_phase {
-            StatusFramePhase::Synced => (0, 1000),
-            StatusFramePhase::PerRow => (
+        let (offset, speed) = match (self.configured.frame_phase, phase) {
+            // An aggregate without a row, or no per-row mode: the base clock.
+            (StatusFramePhase::Synced, _) | (StatusFramePhase::PerRow, None) => (0, 1000),
+            (StatusFramePhase::PerRow, Some(phase)) => (
                 phase,
                 row_speed_permille(phase, self.spread_permille(status)),
             ),
@@ -346,7 +369,7 @@ mod tests {
         let mut icons = animated_icons();
         let start = icons.epoch;
         icons.begin_composition(start, [AgentStatus::Working].into_iter());
-        assert_eq!(icons.override_for(AgentStatus::Working, 0), Some("🌑"));
+        assert_eq!(icons.override_for(AgentStatus::Working, None), Some("🌑"));
         assert!(!icons.frame_stale(start + Duration::from_millis(399)));
         assert!(icons.frame_stale(start + Duration::from_millis(400)));
 
@@ -354,7 +377,7 @@ mod tests {
             start + Duration::from_millis(400),
             [AgentStatus::Working].into_iter(),
         );
-        assert_eq!(icons.override_for(AgentStatus::Working, 0), Some("🌒"));
+        assert_eq!(icons.override_for(AgentStatus::Working, None), Some("🌒"));
         assert!(!icons.frame_stale(start + Duration::from_millis(799)));
     }
 
@@ -366,7 +389,7 @@ mod tests {
         });
         let start = icons.epoch;
         icons.begin_composition(start, [AgentStatus::Working].into_iter());
-        assert_eq!(icons.override_for(AgentStatus::Working, 0), Some("x"));
+        assert_eq!(icons.override_for(AgentStatus::Working, None), Some("x"));
         assert_eq!(icons.next_frame_at(start), None);
     }
 
@@ -379,7 +402,7 @@ mod tests {
         icons.set_configured(StatusIcons::default());
         assert_eq!(icons.epoch, start);
         assert!(!icons.animated_row_present);
-        assert_eq!(icons.override_for(AgentStatus::Working, 0), None);
+        assert_eq!(icons.override_for(AgentStatus::Working, None), None);
     }
 
     #[test]
@@ -388,7 +411,7 @@ mod tests {
         for spread in [0, 1, 250, 500] {
             let mut distinct = std::collections::BTreeSet::new();
             for id in 0..200 {
-                let phase = row_phase("", &format!("w{id}:p1"));
+                let phase = row_phase("", &format!("w{id}:p1")).unwrap();
                 let speed = row_speed_permille(phase, spread);
                 assert_eq!(speed, row_speed_permille(phase, spread));
                 assert!((1000 - u64::from(spread)..=1000 + u64::from(spread)).contains(&speed));
@@ -442,6 +465,38 @@ mod tests {
         icons.frame_phase = StatusFramePhase::Synced;
         let mut shown = ShellStatusIcons::new(icons);
         shown.begin_composition(shown.epoch, [AgentStatus::Working].into_iter());
-        assert_eq!(shown.override_for(AgentStatus::Working, 12345), Some("🌑"));
+        assert_eq!(
+            shown.override_for(AgentStatus::Working, Some(12345)),
+            Some("🌑")
+        );
+    }
+
+    #[test]
+    fn aggregates_and_unanimated_states_keep_the_base_clock() {
+        let spread: StatusIcons = toml::from_str("frame_speed_spread = 0.5").unwrap();
+        let mut icons = ShellStatusIcons::new(StatusIcons {
+            working: Some(moon()),
+            blocked: Some("!".into()),
+            frame_phase: StatusFramePhase::PerRow,
+            ..spread
+        });
+        let start = icons.epoch;
+        icons.begin_composition(
+            start + Duration::from_millis(400),
+            [AgentStatus::Working].into_iter(),
+        );
+        // 400 ms is one base period of 400 ms * (1 - 0.5) twice; a row without a
+        // seed uses the full period and shows frame 1.
+        assert_eq!(icons.override_for(AgentStatus::Working, None), Some("🌒"));
+        assert_eq!(icons.base_interval(), Duration::from_millis(200));
+
+        // Only `idle` is spread: working has no spread, so the clock is the base.
+        let table: StatusIcons = toml::from_str("frame_speed_spread = { idle = 0.5 }").unwrap();
+        let icons = ShellStatusIcons::new(StatusIcons {
+            working: Some(moon()),
+            frame_phase: StatusFramePhase::PerRow,
+            ..table
+        });
+        assert_eq!(icons.base_interval(), Duration::from_millis(400));
     }
 }

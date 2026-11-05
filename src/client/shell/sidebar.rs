@@ -339,10 +339,7 @@ pub(crate) fn render_sidebar(
                 status,
                 config.status_indicators,
                 &config.status_icons,
-                super::status_frames::row_phase(
-                    state.active_endpoint_id.phase_key(),
-                    &workspace.workspace_id,
-                ),
+                super::status_frames::row_phase("", &workspace.workspace_id),
             ),
             entry,
             rows,

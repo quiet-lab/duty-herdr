@@ -237,21 +237,6 @@ impl StatusSpeedSpreads {
             unknown: spread,
         }
     }
-
-    /// The largest spread of any state, in thousandths.
-    pub fn max_permille(&self) -> u16 {
-        [
-            self.idle,
-            self.working,
-            self.blocked,
-            self.done,
-            self.unknown,
-        ]
-        .into_iter()
-        .map(StatusSpeedSpread::permille)
-        .max()
-        .unwrap_or(0)
-    }
 }
 
 impl<'de> Deserialize<'de> for StatusSpeedSpreads {
@@ -2630,17 +2615,10 @@ scrollback_lines = 12345
         let all = parse("frame_speed_spread = 0.25").unwrap();
         assert_eq!(all.working.permille(), 250);
         assert_eq!(all.idle.permille(), 250);
-        assert_eq!(all.max_permille(), 250);
-        assert_eq!(parse("frame_speed_spread = 0").unwrap().max_permille(), 0);
-        assert_eq!(
-            parse("frame_speed_spread = 0.5").unwrap().max_permille(),
-            500
-        );
         let table = parse("frame_speed_spread = { working = 0.25, blocked = 0.0 }").unwrap();
         assert_eq!(table.working.permille(), 250);
         assert_eq!(table.blocked.permille(), 0);
         assert_eq!(table.done.permille(), 0);
-        assert_eq!(table.max_permille(), 250);
         for bad in [
             "frame_speed_spread = 0.51",
             "frame_speed_spread = -0.1",

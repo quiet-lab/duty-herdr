@@ -924,7 +924,7 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
             AgentStatus::Working,
             StatusIndicatorStyle::Dots,
             &defaults,
-            0
+            None
         ),
         "●"
     );
@@ -933,7 +933,7 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
             AgentStatus::Blocked,
             StatusIndicatorStyle::Symbols,
             &defaults,
-            0
+            None
         ),
         "×"
     );
@@ -945,15 +945,20 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
         ..StatusIcons::default()
     });
     for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
-        assert_eq!(status_icon(AgentStatus::Working, style, &icons, 0), "🟡");
-        assert_eq!(status_icon(AgentStatus::Blocked, style, &icons, 0), "!");
+        assert_eq!(status_icon(AgentStatus::Working, style, &icons, None), "🟡");
+        assert_eq!(status_icon(AgentStatus::Blocked, style, &icons, None), "!");
     }
     assert_eq!(
-        status_icon(AgentStatus::Done, StatusIndicatorStyle::Symbols, &icons, 0),
+        status_icon(
+            AgentStatus::Done,
+            StatusIndicatorStyle::Symbols,
+            &icons,
+            None
+        ),
         "✓"
     );
     assert_eq!(
-        status_icon(AgentStatus::Idle, StatusIndicatorStyle::Dots, &icons, 0),
+        status_icon(AgentStatus::Idle, StatusIndicatorStyle::Dots, &icons, None),
         "○"
     );
     assert_eq!(status_dot(AgentStatus::Working, &icons), "🟡");

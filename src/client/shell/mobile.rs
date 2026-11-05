@@ -202,7 +202,7 @@ fn render_header_button(
             crate::api::schema::AgentStatus::Blocked,
             config.status_indicators,
             &config.status_icons,
-            0,
+            None,
         );
         let icon_width = display_width(icon);
         put_text(
@@ -308,7 +308,7 @@ fn render_agent_summary(
             continue;
         }
         let symbol = match (
-            config.status_icons.override_for(status, 0),
+            config.status_icons.override_for(status, None),
             config.status_indicators,
             status,
         ) {
