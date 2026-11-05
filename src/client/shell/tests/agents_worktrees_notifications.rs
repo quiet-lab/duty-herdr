@@ -650,6 +650,97 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
 }
 
 #[test]
+fn status_icon_prefers_configured_overrides_over_indicator_style() {
+    use crate::config::{StatusIcons, StatusIndicatorStyle};
+    let defaults = StatusIcons::default();
+    assert_eq!(
+        status_icon(AgentStatus::Working, StatusIndicatorStyle::Dots, &defaults),
+        "●"
+    );
+    assert_eq!(
+        status_icon(
+            AgentStatus::Blocked,
+            StatusIndicatorStyle::Symbols,
+            &defaults
+        ),
+        "×"
+    );
+    assert_eq!(status_dot(AgentStatus::Idle, &defaults), "○");
+
+    let icons = StatusIcons {
+        working: Some("🟡".into()),
+        blocked: Some("!".into()),
+        ..StatusIcons::default()
+    };
+    for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
+        assert_eq!(status_icon(AgentStatus::Working, style, &icons), "🟡");
+        assert_eq!(status_icon(AgentStatus::Blocked, style, &icons), "!");
+    }
+    assert_eq!(
+        status_icon(AgentStatus::Done, StatusIndicatorStyle::Symbols, &icons),
+        "✓"
+    );
+    assert_eq!(
+        status_icon(AgentStatus::Idle, StatusIndicatorStyle::Dots, &icons),
+        "○"
+    );
+    assert_eq!(status_dot(AgentStatus::Working, &icons), "🟡");
+    assert_eq!(status_dot(AgentStatus::Unknown, &icons), "·");
+}
+
+#[test]
+fn agent_sidebar_lays_out_double_width_status_icon_in_two_cells() {
+    let mut projected = snapshot();
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("pi one".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Blocked,
+        state_change_seq: 10,
+        state_labels: vec![("blocked".into(), "needs input".into())],
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut config = Config::default();
+    config.ui.status_icons.blocked = Some("🔴".into());
+    config.ui.sidebar.agents.rows = vec![vec![
+        crate::config::AgentSidebarToken::StateIcon,
+        crate::config::AgentSidebarToken::StateText,
+    ]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let rows = frame.cells.chunks(frame.width as usize).collect::<Vec<_>>();
+    let line_of = |row: &[crate::protocol::CellData]| {
+        row.iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+    };
+    let row = rows
+        .iter()
+        .find(|row| line_of(row).contains("needs input"))
+        .expect("agent row with state text");
+    let line = line_of(row);
+    let x = row
+        .iter()
+        .position(|cell| cell.symbol == "🔴")
+        .expect("double-width status icon in agent row");
+    // The icon covers cells x and x + 1; the separator follows at x + 2 and
+    // the state text starts right after it.
+    assert_ne!(row[x + 1].symbol, "n", "line: {line}");
+    assert_eq!(row[x + 2].symbol, " ", "line: {line}");
+    assert_eq!(row[x + 3].symbol, "n", "line: {line}");
+}
+
+#[test]
 fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     let mut projected = snapshot();
     let mut second_pane = projected.panes[0].clone();

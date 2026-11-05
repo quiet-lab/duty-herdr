@@ -125,6 +125,54 @@ impl StatusIndicatorStyle {
     }
 }
 
+/// Per-status icon overrides drawn on top of the selected `status_indicators`
+/// style. Unset entries fall back to the style's built-in symbol.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StatusIcons {
+    #[serde(deserialize_with = "deserialize_status_icon")]
+    pub idle: Option<String>,
+    #[serde(deserialize_with = "deserialize_status_icon")]
+    pub working: Option<String>,
+    #[serde(deserialize_with = "deserialize_status_icon")]
+    pub blocked: Option<String>,
+    #[serde(deserialize_with = "deserialize_status_icon")]
+    pub done: Option<String>,
+    #[serde(deserialize_with = "deserialize_status_icon")]
+    pub unknown: Option<String>,
+}
+
+fn deserialize_status_icon<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    validate_status_icon(&value).map_err(serde::de::Error::custom)?;
+    Ok(Some(value))
+}
+
+/// Status icons must render predictably in a fixed-width cell grid: one or
+/// two cells wide, and without the U+FE0F variation selector, whose width
+/// terminals disagree on.
+fn validate_status_icon(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("status icon must not be empty".into());
+    }
+    if value.contains('\u{FE0F}') {
+        return Err(format!(
+            "status icon {value:?} contains the U+FE0F variation selector; \
+             use a symbol without it (terminals disagree on its width)"
+        ));
+    }
+    let width = unicode_width::UnicodeWidthStr::width(value);
+    if !(1..=2).contains(&width) {
+        return Err(format!(
+            "status icon {value:?} is {width} cells wide; it must be 1 or 2 cells"
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
@@ -998,6 +1046,8 @@ pub struct UiConfig {
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
+    /// Per-status icon overrides applied on top of `status_indicators`.
+    pub status_icons: StatusIcons,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1226,6 +1276,7 @@ impl Default for UiConfig {
             agent_panel_sort: AgentPanelSortConfig::Spaces,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
+            status_icons: StatusIcons::default(),
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1490,6 +1541,47 @@ status_indicators = "symbols"
         )
         .unwrap();
         assert_eq!(config.ui.status_indicators, StatusIndicatorStyle::Symbols);
+    }
+
+    #[test]
+    fn status_icons_default_to_none_and_parse_overrides() {
+        let config: Config = toml::from_str("[ui]\nstatus_indicators = \"symbols\"").unwrap();
+        assert_eq!(config.ui.status_icons, StatusIcons::default());
+        assert_eq!(config.ui.status_icons.working, None);
+
+        let config: Config = toml::from_str(
+            r#"
+[ui.status_icons]
+working = "🟡"
+idle = "z"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.status_icons.working.as_deref(), Some("🟡"));
+        assert_eq!(config.ui.status_icons.idle.as_deref(), Some("z"));
+        assert_eq!(config.ui.status_icons.blocked, None);
+        assert_eq!(config.ui.status_icons.done, None);
+        assert_eq!(config.ui.status_icons.unknown, None);
+    }
+
+    #[test]
+    fn status_icons_reject_empty_variation_selector_and_wide_values() {
+        for (value, expected) in [
+            ("", "must not be empty"),
+            ("⚙\u{FE0F}", "U+FE0F"),
+            ("abc", "3 cells wide"),
+            ("🟡🟡", "4 cells wide"),
+        ] {
+            let toml = format!("[ui.status_icons]\nworking = \"{value}\"\n");
+            let err = match toml::from_str::<Config>(&toml) {
+                Ok(_) => panic!("value {value:?} should be rejected"),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err.contains(expected),
+                "value {value:?}: error {err:?} should mention {expected:?}"
+            );
+        }
     }
 
     #[test]

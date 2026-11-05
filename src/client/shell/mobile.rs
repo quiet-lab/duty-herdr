@@ -109,7 +109,11 @@ fn render_header_status(
         name_width.min(3),
         &format!(
             " {} ",
-            status_icon(workspace.agent_status, config.status_indicators)
+            status_icon(
+                workspace.agent_status,
+                config.status_indicators,
+                &config.status_icons
+            )
         ),
         Style::default()
             .fg(status_color(workspace.agent_status, palette))
@@ -188,15 +192,18 @@ fn render_header_button(
         .iter()
         .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Blocked)
     {
+        let icon = status_icon(
+            crate::api::schema::AgentStatus::Blocked,
+            config.status_indicators,
+            &config.status_icons,
+        );
+        let icon_width = display_width(icon);
         put_text(
             buffer,
-            area.right().saturating_sub(1),
+            area.right().saturating_sub(icon_width),
             area.y,
-            1,
-            status_icon(
-                crate::api::schema::AgentStatus::Blocked,
-                config.status_indicators,
-            ),
+            icon_width,
+            icon,
             Style::default().fg(palette.red).bg(palette.surface0),
         );
     }
@@ -293,11 +300,16 @@ fn render_agent_summary(
         if count == 0 {
             continue;
         }
-        let symbol = match (config.status_indicators, status) {
-            (crate::config::StatusIndicatorStyle::Dots, AgentStatus::Blocked) => Some("◉"),
-            (crate::config::StatusIndicatorStyle::Dots, AgentStatus::Done) => Some("●"),
-            (crate::config::StatusIndicatorStyle::Dots, _) => None,
-            _ => Some(status_icon(status, config.status_indicators)),
+        let symbol = match (
+            status_icon_override(status, &config.status_icons),
+            config.status_indicators,
+            status,
+        ) {
+            (Some(icon), _, _) => Some(icon),
+            (None, crate::config::StatusIndicatorStyle::Dots, AgentStatus::Blocked) => Some("◉"),
+            (None, crate::config::StatusIndicatorStyle::Dots, AgentStatus::Done) => Some("●"),
+            (None, crate::config::StatusIndicatorStyle::Dots, _) => None,
+            (None, style, _) => Some(builtin_status_icon(status, style)),
         };
         let text = symbol.map_or_else(
             || format!("{count} {label}"),
@@ -705,7 +717,12 @@ fn mobile_items(
                     Line::from(vec![
                         Span::styled("  ", Style::default().bg(background)),
                         Span::styled(
-                            status_icon(agent.agent_status, config.status_indicators),
+                            status_icon(
+                                agent.agent_status,
+                                config.status_indicators,
+                                &config.status_icons,
+                            )
+                            .to_owned(),
                             Style::default()
                                 .fg(if endpoint.stale() {
                                     palette.overlay0
@@ -837,7 +854,12 @@ fn mobile_items(
                                 .add_modifier(dim),
                         ),
                         Span::styled(
-                            status_icon(workspace.agent_status, config.status_indicators),
+                            status_icon(
+                                workspace.agent_status,
+                                config.status_indicators,
+                                &config.status_icons,
+                            )
+                            .to_owned(),
                             Style::default().fg(status).bg(background).add_modifier(dim),
                         ),
                         Span::styled(" ", Style::default().bg(background)),

@@ -175,7 +175,31 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     hash
 }
 
+/// Returns the configured `[ui.status_icons]` override for `status`, or the
+/// built-in symbol of `style` when no override is set.
 fn status_icon(
+    status: crate::api::schema::AgentStatus,
+    style: crate::config::StatusIndicatorStyle,
+    icons: &crate::config::StatusIcons,
+) -> &str {
+    status_icon_override(status, icons).unwrap_or_else(|| builtin_status_icon(status, style))
+}
+
+fn status_icon_override(
+    status: crate::api::schema::AgentStatus,
+    icons: &crate::config::StatusIcons,
+) -> Option<&str> {
+    use crate::api::schema::AgentStatus;
+    match status {
+        AgentStatus::Idle => icons.idle.as_deref(),
+        AgentStatus::Working => icons.working.as_deref(),
+        AgentStatus::Blocked => icons.blocked.as_deref(),
+        AgentStatus::Done => icons.done.as_deref(),
+        AgentStatus::Unknown => icons.unknown.as_deref(),
+    }
+}
+
+fn builtin_status_icon(
     status: crate::api::schema::AgentStatus,
     style: crate::config::StatusIndicatorStyle,
 ) -> &'static str {
@@ -196,8 +220,8 @@ fn status_icon(
     }
 }
 
-fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
-    status_icon(status, crate::config::StatusIndicatorStyle::Dots)
+fn status_dot(status: crate::api::schema::AgentStatus, icons: &crate::config::StatusIcons) -> &str {
+    status_icon(status, crate::config::StatusIndicatorStyle::Dots, icons)
 }
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
