@@ -83,7 +83,7 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            render_agent_row(buffer, rect, row, "", config);
         },
     );
 }
@@ -346,6 +346,7 @@ pub(super) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,
+    endpoint_key: &str,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
@@ -366,7 +367,12 @@ pub(super) fn render_agent_row(
     let status_style = Style::default().fg(status_color(row.status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
-        status_icon(row.status, config.status_indicators, &config.status_icons),
+        status_icon(
+            row.status,
+            config.status_indicators,
+            &config.status_icons,
+            super::status_frames::row_phase(endpoint_key, &row.pane_id),
+        ),
         Style::default().fg(status_color(row.status, palette)),
     );
     let rows = if row.rows.is_empty() {

@@ -81,6 +81,14 @@ impl ClientEndpointId {
         matches!(self, Self::Local)
     }
 
+    /// Stable text identifying the endpoint, for hashing without allocation.
+    pub(crate) fn phase_key(&self) -> &str {
+        match self {
+            Self::Local => "",
+            Self::Ssh(profile_id) => profile_id.as_str(),
+        }
+    }
+
     pub(crate) fn storage_key(&self) -> String {
         match self {
             Self::Local => "local".into(),

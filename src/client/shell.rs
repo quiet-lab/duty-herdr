@@ -177,14 +177,16 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
 }
 
 /// Returns the current frame of the `[ui.status_icons]` override for `status`,
-/// or the built-in symbol of `style` when no override is set.
+/// or the built-in symbol of `style` when no override is set. `phase` is the
+/// row's seed from `status_frames::row_phase`, 0 for an aggregate without a row.
 fn status_icon(
     status: crate::api::schema::AgentStatus,
     style: crate::config::StatusIndicatorStyle,
     icons: &status_frames::ShellStatusIcons,
+    phase: u64,
 ) -> &str {
     icons
-        .override_for(status)
+        .override_for(status, phase)
         .unwrap_or_else(|| builtin_status_icon(status, style))
 }
 
@@ -213,7 +215,7 @@ fn status_dot(
     status: crate::api::schema::AgentStatus,
     icons: &status_frames::ShellStatusIcons,
 ) -> &str {
-    status_icon(status, crate::config::StatusIndicatorStyle::Dots, icons)
+    status_icon(status, crate::config::StatusIndicatorStyle::Dots, icons, 0)
 }
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {

@@ -26,7 +26,11 @@ pub(super) fn render_collapsed(
                 status_icon(
                     row.agent.status,
                     config.status_indicators,
-                    &config.status_icons
+                    &config.status_icons,
+                    super::status_frames::row_phase(
+                        row.endpoint_id.phase_key(),
+                        &row.agent.pane_id,
+                    ),
                 )
             ),
             Style::default()
@@ -76,7 +80,13 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            super::agent_sidebar::render_agent_row(
+                buffer,
+                rect,
+                &row.agent,
+                row.endpoint_id.phase_key(),
+                config,
+            );
             if row.stale {
                 buffer.set_style(
                     rect,

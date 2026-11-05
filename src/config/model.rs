@@ -129,12 +129,178 @@ impl StatusIndicatorStyle {
     }
 }
 
+/// How the frames of different rows in one state relate in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusFramePhase {
+    /// Every row in one state shows the same frame.
+    #[default]
+    Synced,
+    /// Each row is shifted by a stable offset derived from its identifier.
+    PerRow,
+}
+
+const STATUS_SPEED_SPREAD_MAX_PERMILLE: u16 = 500;
+
+/// Spread of the per-row frame period in `per_row` mode, in thousandths: the
+/// period of a row is `frame_interval_ms` times a factor from `1 - spread` to
+/// `1 + spread`. Written in TOML as a number from 0.0 to 0.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StatusSpeedSpread(u16);
+
+impl StatusSpeedSpread {
+    pub fn from_permille(value: u16) -> Option<Self> {
+        (value <= STATUS_SPEED_SPREAD_MAX_PERMILLE).then_some(Self(value))
+    }
+
+    pub fn permille(self) -> u16 {
+        self.0
+    }
+}
+
+impl Serialize for StatusSpeedSpread {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_f64(f64::from(self.0) / 1000.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusSpeedSpread {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct SpreadVisitor;
+
+        impl SpreadVisitor {
+            fn from_f64<E: serde::de::Error>(value: f64) -> Result<StatusSpeedSpread, E> {
+                let permille = (value * 1000.0).round();
+                if value.is_finite() && (0.0..=500.0).contains(&permille) {
+                    // Range-checked above, so the cast is exact.
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    if let Some(spread) = StatusSpeedSpread::from_permille(permille as u16) {
+                        return Ok(spread);
+                    }
+                }
+                Err(E::custom(format!(
+                    "frame_speed_spread {value} is out of range; it must be 0.0..=0.5"
+                )))
+            }
+        }
+
+        impl serde::de::Visitor<'_> for SpreadVisitor {
+            type Value = StatusSpeedSpread;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a number from 0.0 to 0.5")
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                Self::from_f64(value)
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Self::from_f64(value as f64)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Self::from_f64(value as f64)
+            }
+        }
+
+        deserializer.deserialize_any(SpreadVisitor)
+    }
+}
+
+/// Frame period spread of each status. In TOML it is a single number for all
+/// states or a table `{ working = 0.25, blocked = 0.0 }` with the status names
+/// as keys; a state missing from the table has spread 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(default)]
+pub struct StatusSpeedSpreads {
+    pub idle: StatusSpeedSpread,
+    pub working: StatusSpeedSpread,
+    pub blocked: StatusSpeedSpread,
+    pub done: StatusSpeedSpread,
+    pub unknown: StatusSpeedSpread,
+}
+
+impl StatusSpeedSpreads {
+    pub fn all(spread: StatusSpeedSpread) -> Self {
+        Self {
+            idle: spread,
+            working: spread,
+            blocked: spread,
+            done: spread,
+            unknown: spread,
+        }
+    }
+
+    /// The largest spread of any state, in thousandths.
+    pub fn max_permille(&self) -> u16 {
+        [
+            self.idle,
+            self.working,
+            self.blocked,
+            self.done,
+            self.unknown,
+        ]
+        .into_iter()
+        .map(StatusSpeedSpread::permille)
+        .max()
+        .unwrap_or(0)
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusSpeedSpreads {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default, deny_unknown_fields)]
+        struct RawTable {
+            idle: StatusSpeedSpread,
+            working: StatusSpeedSpread,
+            blocked: StatusSpeedSpread,
+            done: StatusSpeedSpread,
+            unknown: StatusSpeedSpread,
+        }
+
+        // An untagged enum hides the cause of a failure, so the two shapes are
+        // told apart by the value itself and each reports its own error.
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::Table(_) => {
+                let table = value
+                    .try_into::<RawTable>()
+                    .map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    idle: table.idle,
+                    working: table.working,
+                    blocked: table.blocked,
+                    done: table.done,
+                    unknown: table.unknown,
+                })
+            }
+            other => other
+                .try_into::<StatusSpeedSpread>()
+                .map(Self::all)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
 const DEFAULT_STATUS_FRAME_INTERVAL_MS: u32 = 400;
 const STATUS_FRAME_INTERVAL_RANGE_MS: std::ops::RangeInclusive<u32> = 100..=5000;
 
 /// Per-status icon overrides drawn on top of the selected `status_indicators`
 /// style. Unset entries fall back to the style's built-in symbol. An entry with
-/// several frames is shown in a loop, one frame per `frame_interval_ms`.
+/// several frames is shown in a loop, one frame per `frame_interval_ms`;
+/// `frame_phase` chooses whether rows in one state share the frame and
+/// `frame_speed_spread` how much their periods differ in `per_row` mode.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StatusIcons {
@@ -145,6 +311,8 @@ pub struct StatusIcons {
     pub unknown: Option<StatusIconFrames>,
     #[serde(deserialize_with = "deserialize_status_frame_interval")]
     pub frame_interval_ms: u32,
+    pub frame_phase: StatusFramePhase,
+    pub frame_speed_spread: StatusSpeedSpreads,
 }
 
 impl Default for StatusIcons {
@@ -156,6 +324,8 @@ impl Default for StatusIcons {
             done: None,
             unknown: None,
             frame_interval_ms: DEFAULT_STATUS_FRAME_INTERVAL_MS,
+            frame_phase: StatusFramePhase::Synced,
+            frame_speed_spread: StatusSpeedSpreads::default(),
         }
     }
 }
@@ -2424,5 +2594,64 @@ scrollback_lines = 12345
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.advanced.scrollback_limit_bytes, 12345);
+    }
+
+    #[test]
+    fn status_icons_parse_frame_phase() {
+        let default: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            default.ui.status_icons.frame_phase,
+            StatusFramePhase::Synced
+        );
+        for (text, expected) in [
+            ("synced", StatusFramePhase::Synced),
+            ("per_row", StatusFramePhase::PerRow),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("[ui.status_icons]\nframe_phase = \"{text}\"\n")).unwrap();
+            assert_eq!(config.ui.status_icons.frame_phase, expected);
+        }
+        let error = toml::from_str::<Config>("[ui.status_icons]\nframe_phase = \"random\"\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("synced") && error.contains("per_row"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn status_icons_parse_frame_speed_spread() {
+        let parse = |body: &str| {
+            toml::from_str::<Config>(&format!("[ui.status_icons]\n{body}\n"))
+                .map(|config| config.ui.status_icons.frame_speed_spread)
+        };
+        assert_eq!(parse("").unwrap(), StatusSpeedSpreads::default());
+        let all = parse("frame_speed_spread = 0.25").unwrap();
+        assert_eq!(all.working.permille(), 250);
+        assert_eq!(all.idle.permille(), 250);
+        assert_eq!(all.max_permille(), 250);
+        assert_eq!(parse("frame_speed_spread = 0").unwrap().max_permille(), 0);
+        assert_eq!(
+            parse("frame_speed_spread = 0.5").unwrap().max_permille(),
+            500
+        );
+        let table = parse("frame_speed_spread = { working = 0.25, blocked = 0.0 }").unwrap();
+        assert_eq!(table.working.permille(), 250);
+        assert_eq!(table.blocked.permille(), 0);
+        assert_eq!(table.done.permille(), 0);
+        assert_eq!(table.max_permille(), 250);
+        for bad in [
+            "frame_speed_spread = 0.51",
+            "frame_speed_spread = -0.1",
+            "frame_speed_spread = 1",
+            "frame_speed_spread = { working = 0.6 }",
+            "frame_speed_spread = { sleeping = 0.2 }",
+            "frame_speed_spread = \"fast\"",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        let message = parse("frame_speed_spread = 0.9").unwrap_err().to_string();
+        assert!(message.contains("0.0..=0.5"), "{message}");
     }
 }

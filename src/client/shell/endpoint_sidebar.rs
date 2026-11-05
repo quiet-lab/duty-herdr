@@ -181,6 +181,10 @@ pub(super) fn render_collapsed(
                     workspace.agent_status,
                     config.status_indicators,
                     &config.status_icons,
+                    super::status_frames::row_phase(
+                        endpoint.endpoint_id.phase_key(),
+                        &workspace.workspace_id,
+                    ),
                 ),
                 Style::default()
                     .fg(if stale {
@@ -476,7 +480,15 @@ pub(super) fn render_expanded(
                     buffer,
                     nested,
                     status,
-                    status_icon(status, config.status_indicators, &config.status_icons),
+                    status_icon(
+                        status,
+                        config.status_indicators,
+                        &config.status_icons,
+                        super::status_frames::row_phase(
+                            endpoint.endpoint_id.phase_key(),
+                            &workspace.workspace_id,
+                        ),
+                    ),
                     entry,
                     tokens,
                     endpoint_active && workspace.focused,

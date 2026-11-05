@@ -98,7 +98,12 @@ pub(crate) fn render_collapsed_sidebar(
             rect.x.saturating_add(2),
             rect.y,
             rect.width.saturating_sub(2),
-            status_icon(status, config.status_indicators, &config.status_icons),
+            status_icon(
+                status,
+                config.status_indicators,
+                &config.status_icons,
+                super::status_frames::row_phase("", &workspace.workspace_id),
+            ),
             Style::default().fg(status_color(status, palette)),
         );
         hits.workspaces.push(WorkspaceHit {
@@ -169,6 +174,7 @@ pub(crate) fn render_collapsed_sidebar(
                 agent.agent_status,
                 config.status_indicators,
                 &config.status_icons,
+                super::status_frames::row_phase("", &agent.pane_id),
             ),
             Style::default().fg(status_color(agent.agent_status, palette)),
         );
@@ -329,7 +335,15 @@ pub(crate) fn render_sidebar(
             buffer,
             rect,
             status,
-            status_icon(status, config.status_indicators, &config.status_icons),
+            status_icon(
+                status,
+                config.status_indicators,
+                &config.status_icons,
+                super::status_frames::row_phase(
+                    state.active_endpoint_id.phase_key(),
+                    &workspace.workspace_id,
+                ),
+            ),
             entry,
             rows,
             workspace.focused,

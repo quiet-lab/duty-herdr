@@ -1109,6 +1109,46 @@
           "description": "Time each frame of a status icon with several frames stays on screen, from 100 to 5000 milliseconds."
         },
         {
+          "key": "ui.status_icons.frame_phase",
+          "type": "enum",
+          "default": "\"synced\"",
+          "description": "How rows in the same state relate in time. synced shows the same frame on every row. per_row shifts each row by a stable offset derived from its workspace or pane id (and its machine, for remote rows), so rows do not animate in step.",
+          "values": [
+            "synced",
+            "per_row"
+          ]
+        },
+        {
+          "key": "ui.status_icons.frame_speed_spread.idle",
+          "type": "number",
+          "default": "0.0",
+          "description": "Frame period spread for the idle state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: frame_interval_ms times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
+        },
+        {
+          "key": "ui.status_icons.frame_speed_spread.working",
+          "type": "number",
+          "default": "0.0",
+          "description": "Frame period spread for the working state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: frame_interval_ms times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
+        },
+        {
+          "key": "ui.status_icons.frame_speed_spread.blocked",
+          "type": "number",
+          "default": "0.0",
+          "description": "Frame period spread for the blocked state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: frame_interval_ms times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
+        },
+        {
+          "key": "ui.status_icons.frame_speed_spread.done",
+          "type": "number",
+          "default": "0.0",
+          "description": "Frame period spread for the done state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: frame_interval_ms times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
+        },
+        {
+          "key": "ui.status_icons.frame_speed_spread.unknown",
+          "type": "number",
+          "default": "0.0",
+          "description": "Frame period spread for the unknown state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: frame_interval_ms times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
+        },
+        {
           "key": "ui.cursor_shape_by_screen",
           "type": "table of cursor shape rules",
           "default": "{}",

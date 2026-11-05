@@ -107,7 +107,8 @@ fn render_header_status(
         status_icon(
             workspace.agent_status,
             config.status_indicators,
-            &config.status_icons
+            &config.status_icons,
+            super::status_frames::row_phase("", &workspace.workspace_id),
         )
     );
     // The icon may be one or two cells wide; the name starts after the icon and
@@ -201,6 +202,7 @@ fn render_header_button(
             crate::api::schema::AgentStatus::Blocked,
             config.status_indicators,
             &config.status_icons,
+            0,
         );
         let icon_width = display_width(icon);
         put_text(
@@ -306,7 +308,7 @@ fn render_agent_summary(
             continue;
         }
         let symbol = match (
-            config.status_icons.override_for(status),
+            config.status_icons.override_for(status, 0),
             config.status_indicators,
             status,
         ) {
@@ -726,6 +728,10 @@ fn mobile_items(
                                 agent.agent_status,
                                 config.status_indicators,
                                 &config.status_icons,
+                                super::status_frames::row_phase(
+                                    endpoint.endpoint_id.phase_key(),
+                                    &agent.pane_id,
+                                ),
                             )
                             .to_owned(),
                             Style::default()
@@ -863,6 +869,10 @@ fn mobile_items(
                                 workspace.agent_status,
                                 config.status_indicators,
                                 &config.status_icons,
+                                super::status_frames::row_phase(
+                                    endpoint.endpoint_id.phase_key(),
+                                    &workspace.workspace_id,
+                                ),
                             )
                             .to_owned(),
                             Style::default().fg(status).bg(background).add_modifier(dim),

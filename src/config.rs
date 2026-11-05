@@ -25,9 +25,10 @@ pub use self::{
     model::{
         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
         ConfigReloadStatus, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
-        ShellModeConfig, SidebarCollapsedModeConfig, StatusIconFrames, StatusIcons,
-        StatusIndicatorStyle, TabBarPositionConfig, ToastClipboardPosition, ToastConfig,
-        ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
+        ShellModeConfig, SidebarCollapsedModeConfig, StatusFramePhase, StatusIconFrames,
+        StatusIcons, StatusIndicatorStyle, TabBarPositionConfig, ToastClipboardPosition,
+        ToastConfig, ToastDelivery, ToastHerdrPosition, UpdateChannelConfig,
+        MAX_TOAST_DELAY_SECONDS,
     },
     screen_cursor::{ScreenCursorRules, ScreenCursorShapeConfig},
     sidebar::{

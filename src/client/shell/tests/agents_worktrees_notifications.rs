@@ -920,14 +920,20 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
     let defaults =
         crate::client::shell::status_frames::ShellStatusIcons::new(StatusIcons::default());
     assert_eq!(
-        status_icon(AgentStatus::Working, StatusIndicatorStyle::Dots, &defaults),
+        status_icon(
+            AgentStatus::Working,
+            StatusIndicatorStyle::Dots,
+            &defaults,
+            0
+        ),
         "●"
     );
     assert_eq!(
         status_icon(
             AgentStatus::Blocked,
             StatusIndicatorStyle::Symbols,
-            &defaults
+            &defaults,
+            0
         ),
         "×"
     );
@@ -939,15 +945,15 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
         ..StatusIcons::default()
     });
     for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
-        assert_eq!(status_icon(AgentStatus::Working, style, &icons), "🟡");
-        assert_eq!(status_icon(AgentStatus::Blocked, style, &icons), "!");
+        assert_eq!(status_icon(AgentStatus::Working, style, &icons, 0), "🟡");
+        assert_eq!(status_icon(AgentStatus::Blocked, style, &icons, 0), "!");
     }
     assert_eq!(
-        status_icon(AgentStatus::Done, StatusIndicatorStyle::Symbols, &icons),
+        status_icon(AgentStatus::Done, StatusIndicatorStyle::Symbols, &icons, 0),
         "✓"
     );
     assert_eq!(
-        status_icon(AgentStatus::Idle, StatusIndicatorStyle::Dots, &icons),
+        status_icon(AgentStatus::Idle, StatusIndicatorStyle::Dots, &icons, 0),
         "○"
     );
     assert_eq!(status_dot(AgentStatus::Working, &icons), "🟡");

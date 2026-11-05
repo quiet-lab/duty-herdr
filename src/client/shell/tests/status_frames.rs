@@ -457,3 +457,72 @@ fn status_frame_tick_render_scale_profile() {
         start.elapsed().as_secs_f64() * 1e9 / 1e6
     );
 }
+
+fn distinct_frames(state: &mut ClientShellState, tick: u32) -> usize {
+    let counts = frame_counts(state, MOON, (106, 30), tick);
+    counts.iter().filter(|count| **count > 0).count()
+}
+
+fn state_with_phase(phase: crate::config::StatusFramePhase) -> ClientShellState {
+    let mut config = moon_config();
+    config.ui.status_icons.frame_phase = phase;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(working_snapshot()));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn per_row_phase_shows_different_frames_in_one_composition() {
+    let mut synced = state_with_phase(crate::config::StatusFramePhase::Synced);
+    let mut per_row = state_with_phase(crate::config::StatusFramePhase::PerRow);
+    for tick in 0..4 {
+        assert_eq!(distinct_frames(&mut synced, tick), 1, "tick {tick}");
+        assert!(distinct_frames(&mut per_row, tick) >= 2, "tick {tick}");
+    }
+}
+
+#[test]
+fn per_row_phase_keeps_the_animation_clock() {
+    let mut state = state_with_phase(crate::config::StatusFramePhase::PerRow);
+    let epoch = state.config.status_icons.epoch();
+    state.compose_at(106, 30, epoch).expect("frame");
+    assert_eq!(
+        state.config.status_icons.next_frame_at(epoch),
+        Some(epoch + INTERVAL)
+    );
+}
+
+#[test]
+fn speed_spread_makes_rows_drift_apart_and_shortens_the_clock() {
+    let mut config = moon_config();
+    config.ui.status_icons.frame_phase = crate::config::StatusFramePhase::PerRow;
+    config.ui.status_icons.frame_speed_spread =
+        toml::from_str::<crate::config::StatusIcons>("frame_speed_spread = 0.5")
+            .expect("icons")
+            .frame_speed_spread;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(working_snapshot()));
+    state.set_pane_surface(surface());
+    let epoch = state.config.status_icons.epoch();
+    state.compose_at(106, 30, epoch).expect("frame");
+    // The clock follows the fastest row: 400 ms * (1 - 0.5).
+    assert_eq!(
+        state.config.status_icons.next_frame_at(epoch),
+        Some(epoch + Duration::from_millis(200))
+    );
+    // Rows with different factors do not keep a constant frame difference.
+    let mut spreads_seen = std::collections::BTreeSet::new();
+    for tick in 0..40 {
+        let now = epoch + Duration::from_millis(100) * tick;
+        let frame = state.compose_at(106, 30, now).expect("frame");
+        let shown: Vec<usize> = MOON
+            .iter()
+            .enumerate()
+            .filter(|(_, moon)| frame.cells.iter().any(|cell| cell.symbol == **moon))
+            .map(|(index, _)| index)
+            .collect();
+        spreads_seen.insert(shown);
+    }
+    assert!(spreads_seen.len() > 4, "{spreads_seen:?}");
+}
