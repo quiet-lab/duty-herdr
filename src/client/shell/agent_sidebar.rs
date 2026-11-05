@@ -8,6 +8,7 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+use super::render::put_text;
 use super::*;
 
 pub(super) struct AgentRow {
@@ -342,7 +343,7 @@ pub(super) fn render_agent_row(
     let status_style = Style::default().fg(status_color(row.status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
-        status_icon(row.status, config.status_indicators),
+        status_icon(row.status, config.status_indicators, &config.status_icons),
         Style::default().fg(status_color(row.status, palette)),
     );
     let rows = if row.rows.is_empty() {
@@ -370,14 +371,6 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
-    }
-}
-
-fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    for (offset, character) in text.chars().take(width as usize).enumerate() {
-        if let Some(cell) = buffer.cell_mut((x + offset as u16, y)) {
-            cell.set_char(character).set_style(style);
-        }
     }
 }
 

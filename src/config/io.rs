@@ -778,6 +778,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_uses_compact_actionable_banner() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let diagnostics = vec![
             "one".to_string(),
             "two".to_string(),
@@ -794,6 +797,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_unknown_keys_compactly() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let diagnostics = vec![
             "unknown config key ui.mouse_captur; ignoring key".to_string(),
             "unknown config key keys.new_tabb; ignoring key".to_string(),
@@ -807,6 +813,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_keeps_mixed_diagnostics_generic() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let diagnostics = vec![
             "invalid ui config: invalid type: string; keeping current ui settings".to_string(),
             "unknown config key keys.new_tabb; ignoring key".to_string(),
@@ -820,6 +829,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_default_fallback() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let diagnostics = vec![
             "config parse error: TOML parse error at line 33, column 8\n   |\n33 | type = \"popup\"\n   |        ^^^^^^^\nunknown variant `popup`; using defaults"
                 .to_string(),
@@ -833,6 +845,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_unreadable_config_impact() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let startup = vec!["config read error: permission denied; using defaults".to_string()];
         assert_eq!(
             config_diagnostic_summary(&startup).as_deref(),
@@ -849,6 +864,9 @@ mod tests {
 
     #[test]
     fn config_diagnostic_summary_reports_retained_live_config() {
+        // The summary names the file from the config path environment variable,
+        // which other tests change while holding this lock.
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let diagnostics = vec![
             "config parse error: TOML parse error at line 7, column 4; keeping current config"
                 .to_string(),
