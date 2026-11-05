@@ -279,11 +279,125 @@ impl<'de> Deserialize<'de> for StatusSpeedSpreads {
 }
 
 const DEFAULT_STATUS_FRAME_INTERVAL_MS: u32 = 400;
-const STATUS_FRAME_INTERVAL_RANGE_MS: std::ops::RangeInclusive<u32> = 100..=5000;
+const STATUS_FRAME_INTERVAL_RANGE_MS: std::ops::RangeInclusive<u32> = 50..=5000;
+
+/// Time each frame stays on screen for one status, in milliseconds, from 50 to
+/// 5000. Written in TOML as a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusFrameInterval(u32);
+
+impl StatusFrameInterval {
+    pub fn from_ms(value: u32) -> Option<Self> {
+        STATUS_FRAME_INTERVAL_RANGE_MS
+            .contains(&value)
+            .then_some(Self(value))
+    }
+
+    pub fn ms(self) -> u32 {
+        self.0
+    }
+}
+
+impl Default for StatusFrameInterval {
+    fn default() -> Self {
+        Self(DEFAULT_STATUS_FRAME_INTERVAL_MS)
+    }
+}
+
+impl Serialize for StatusFrameInterval {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusFrameInterval {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = i64::deserialize(deserializer)?;
+        u32::try_from(value)
+            .ok()
+            .and_then(Self::from_ms)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!(
+                    "frame_interval_ms {value} is out of range; it must be {}..={}",
+                    STATUS_FRAME_INTERVAL_RANGE_MS.start(),
+                    STATUS_FRAME_INTERVAL_RANGE_MS.end()
+                ))
+            })
+    }
+}
+
+/// Frame period of each status. In TOML it is a single number for all states
+/// or a table `{ working = 83, blocked = 333 }` with the status names as keys;
+/// a state missing from the table keeps the default of 400 ms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(default)]
+pub struct StatusFrameIntervals {
+    pub idle: StatusFrameInterval,
+    pub working: StatusFrameInterval,
+    pub blocked: StatusFrameInterval,
+    pub done: StatusFrameInterval,
+    pub unknown: StatusFrameInterval,
+}
+
+impl StatusFrameIntervals {
+    pub fn all(interval: StatusFrameInterval) -> Self {
+        Self {
+            idle: interval,
+            working: interval,
+            blocked: interval,
+            done: interval,
+            unknown: interval,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusFrameIntervals {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default, deny_unknown_fields)]
+        struct RawTable {
+            idle: StatusFrameInterval,
+            working: StatusFrameInterval,
+            blocked: StatusFrameInterval,
+            done: StatusFrameInterval,
+            unknown: StatusFrameInterval,
+        }
+
+        // The two shapes are told apart by the value itself, as for the spread.
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::Table(_) => {
+                let table = value
+                    .try_into::<RawTable>()
+                    .map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    idle: table.idle,
+                    working: table.working,
+                    blocked: table.blocked,
+                    done: table.done,
+                    unknown: table.unknown,
+                })
+            }
+            other => other
+                .try_into::<StatusFrameInterval>()
+                .map(Self::all)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
 
 /// Per-status icon overrides drawn on top of the selected `status_indicators`
 /// style. Unset entries fall back to the style's built-in symbol. An entry with
-/// several frames is shown in a loop, one frame per `frame_interval_ms`;
+/// several frames is shown in a loop, one frame per `frame_interval_ms` of its status;
 /// `frame_phase` chooses whether rows in one state share the frame and
 /// `frame_speed_spread` how much their periods differ in `per_row` mode.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -294,8 +408,7 @@ pub struct StatusIcons {
     pub blocked: Option<StatusIconFrames>,
     pub done: Option<StatusIconFrames>,
     pub unknown: Option<StatusIconFrames>,
-    #[serde(deserialize_with = "deserialize_status_frame_interval")]
-    pub frame_interval_ms: u32,
+    pub frame_interval_ms: StatusFrameIntervals,
     pub frame_phase: StatusFramePhase,
     pub frame_speed_spread: StatusSpeedSpreads,
 }
@@ -308,7 +421,7 @@ impl Default for StatusIcons {
             blocked: None,
             done: None,
             unknown: None,
-            frame_interval_ms: DEFAULT_STATUS_FRAME_INTERVAL_MS,
+            frame_interval_ms: StatusFrameIntervals::default(),
             frame_phase: StatusFramePhase::Synced,
             frame_speed_spread: StatusSpeedSpreads::default(),
         }
@@ -406,23 +519,6 @@ impl<'de> Deserialize<'de> for StatusIconFrames {
 
         deserializer.deserialize_any(FramesVisitor)
     }
-}
-
-fn deserialize_status_frame_interval<'de, D>(deserializer: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = i64::deserialize(deserializer)?;
-    u32::try_from(value)
-        .ok()
-        .filter(|value| STATUS_FRAME_INTERVAL_RANGE_MS.contains(value))
-        .ok_or_else(|| {
-            serde::de::Error::custom(format!(
-                "frame_interval_ms {value} is out of range; it must be {}..={}",
-                STATUS_FRAME_INTERVAL_RANGE_MS.start(),
-                STATUS_FRAME_INTERVAL_RANGE_MS.end()
-            ))
-        })
 }
 
 /// Status icons must render predictably in a fixed-width cell grid: one or
@@ -1893,8 +1989,8 @@ frame_interval_ms = 250
         assert!(working.is_animated());
         assert_eq!(icons.idle, Some("☕".into()));
         assert!(!icons.idle.as_ref().unwrap().is_animated());
-        assert_eq!(icons.frame_interval_ms, 250);
-        assert_eq!(StatusIcons::default().frame_interval_ms, 400);
+        assert_eq!(icons.frame_interval_ms, interval_all(250));
+        assert_eq!(StatusIcons::default().frame_interval_ms, interval_all(400));
 
         let config: Config =
             toml::from_str("[ui.status_icons]\nworking = [\"x\"]\nframe_interval_ms = 5000\n")
@@ -1926,21 +2022,52 @@ frame_interval_ms = 250
         }
     }
 
+    fn interval_all(ms: u32) -> StatusFrameIntervals {
+        StatusFrameIntervals::all(StatusFrameInterval::from_ms(ms).unwrap())
+    }
+
+    fn parse_intervals(value: &str) -> Result<StatusFrameIntervals, toml::de::Error> {
+        toml::from_str::<Config>(&format!("[ui.status_icons]\nframe_interval_ms = {value}\n"))
+            .map(|config| config.ui.status_icons.frame_interval_ms)
+    }
+
     #[test]
     fn status_frame_interval_is_range_checked() {
-        for value in [100, 5000] {
-            let toml = format!("[ui.status_icons]\nframe_interval_ms = {value}\n");
-            let config: Config = toml::from_str(&toml).unwrap();
-            assert_eq!(i64::from(config.ui.status_icons.frame_interval_ms), value);
+        for value in [50, 100, 5000] {
+            assert_eq!(
+                parse_intervals(&value.to_string()).unwrap(),
+                interval_all(value)
+            );
         }
-        for value in [-1_i64, 0, 99, 5001, 5_000_000_000] {
-            let toml = format!("[ui.status_icons]\nframe_interval_ms = {value}\n");
-            let err = match toml::from_str::<Config>(&toml) {
-                Ok(_) => panic!("interval {value} should be rejected"),
-                Err(err) => err.to_string(),
-            };
+        for value in [-1_i64, 0, 49, 5001, 5_000_000_000] {
+            let err = parse_intervals(&value.to_string())
+                .expect_err(&format!("interval {value} should be rejected"))
+                .to_string();
             assert!(err.contains("out of range"), "{value}: {err}");
         }
+    }
+
+    #[test]
+    fn status_frame_interval_parses_a_number_or_a_table() {
+        let table = parse_intervals("{ working = 83, blocked = 333 }").unwrap();
+        assert_eq!(table.working.ms(), 83);
+        assert_eq!(table.blocked.ms(), 333);
+        for other in [table.idle, table.done, table.unknown] {
+            assert_eq!(other.ms(), 400);
+        }
+        assert_eq!(parse_intervals("{ }").unwrap(), interval_all(400));
+        for bad in [
+            "{ working = 49 }",
+            "{ working = 5001 }",
+            "{ working = -1 }",
+            "{ sleeping = 100 }",
+            "\"fast\"",
+            "0.5",
+        ] {
+            assert!(parse_intervals(bad).is_err(), "{bad} should be rejected");
+        }
+        let err = parse_intervals("{ blocked = 20 }").unwrap_err().to_string();
+        assert!(err.contains("out of range"), "{err}");
     }
 
     #[test]

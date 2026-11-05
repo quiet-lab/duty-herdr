@@ -19,7 +19,10 @@ fn frames_config(frames: [&str; 4]) -> Config {
         StatusIconFrames::new(frames.into_iter().map(str::to_owned).collect())
             .expect("status frames"),
     );
-    config.ui.status_icons.frame_interval_ms = 400;
+    config.ui.status_icons.frame_interval_ms =
+        toml::from_str::<crate::config::StatusIcons>("frame_interval_ms = 400")
+            .expect("icons")
+            .frame_interval_ms;
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Agent]];
     config
@@ -458,6 +461,71 @@ fn status_frame_tick_render_scale_profile() {
     );
 }
 
+/// Rate and cost of boundary ticks for rows of the `working = 83 ms` state with a
+/// spread of 0.10 in `per_row` mode: the deadline search, the stale check, the
+/// composition over the retained surface and the encoding of the changed cells.
+#[test]
+#[ignore = "manual status frame boundary tick profile"]
+fn status_frame_boundary_tick_profile() {
+    const SECONDS: u64 = 10;
+    for workspaces in [1, 5, 15] {
+        let mut config = moon_config();
+        config.ui.status_icons.frame_phase = crate::config::StatusFramePhase::PerRow;
+        config.ui.status_icons = toml::from_str::<crate::config::StatusIcons>(
+            "frame_interval_ms = { working = 83 }\n\
+             frame_phase = \"per_row\"\n\
+             frame_speed_spread = { working = 0.10 }",
+        )
+        .map(|timing| crate::config::StatusIcons {
+            working: config.ui.status_icons.working.clone(),
+            ..timing
+        })
+        .expect("icons");
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(scale_snapshot(workspaces)));
+        state.set_pane_surface(surface());
+        let mut encoder = crate::protocol::render_ansi::BlitEncoder::new();
+        let epoch = state.config.status_icons.epoch();
+        let end = epoch + Duration::from_secs(SECONDS);
+        let mut now = epoch;
+        let composed = state.compose_at(106, 40, now).expect("frame");
+        let encoded = encoder.encode(&composed.frame, false);
+        encoder.commit(composed.frame, encoded);
+        let (mut ticks, mut total, mut worst) = (0u32, Duration::ZERO, Duration::ZERO);
+        let mut search = Duration::ZERO;
+        while let Some(deadline) = {
+            let started = Instant::now();
+            let next = state.config.status_icons.next_frame_at(now);
+            search += started.elapsed();
+            next
+        } {
+            if deadline > end {
+                break;
+            }
+            now = deadline;
+            let started = Instant::now();
+            assert!(state.tick_status_frame(now, false), "tick {ticks}");
+            let composed = state.compose_at(106, 40, now).expect("frame");
+            let encoded = encoder.encode(&composed.frame, false);
+            std::hint::black_box(&encoded);
+            encoder.commit(composed.frame, encoded);
+            let spent = started.elapsed();
+            total += spent;
+            worst = worst.max(spent);
+            ticks += 1;
+        }
+        eprintln!(
+            "status frame boundary ticks: {workspaces} working workspaces ({} rows): \
+             {:.1} ticks/s, {:.1} us/tick (worst {:.1} us), deadline search {:.2} us",
+            workspaces * 2,
+            f64::from(ticks) / SECONDS as f64,
+            total.as_secs_f64() * 1e6 / f64::from(ticks.max(1)),
+            worst.as_secs_f64() * 1e6,
+            search.as_secs_f64() * 1e6 / f64::from(ticks.max(1)),
+        );
+    }
+}
+
 fn distinct_frames(state: &mut ClientShellState, tick: u32) -> usize {
     let counts = frame_counts(state, MOON, (106, 30), tick);
     counts.iter().filter(|count| **count > 0).count()
@@ -483,18 +551,24 @@ fn per_row_phase_shows_different_frames_in_one_composition() {
 }
 
 #[test]
-fn per_row_phase_keeps_the_animation_clock() {
+fn per_row_deadline_is_the_nearest_row_boundary() {
     let mut state = state_with_phase(crate::config::StatusFramePhase::PerRow);
     let epoch = state.config.status_icons.epoch();
     state.compose_at(106, 30, epoch).expect("frame");
-    assert_eq!(
-        state.config.status_icons.next_frame_at(epoch),
-        Some(epoch + INTERVAL)
-    );
+    // Rows start at their own offsets: the nearest boundary is within one period,
+    // never later than the aggregate clock's.
+    let deadline = state
+        .config
+        .status_icons
+        .next_frame_at(epoch)
+        .expect("deadline");
+    assert!(deadline > epoch);
+    assert!(deadline <= epoch + INTERVAL);
+    assert!(state.timer_delay(epoch) <= INTERVAL);
 }
 
 #[test]
-fn speed_spread_makes_rows_drift_apart_and_shortens_the_clock() {
+fn speed_spread_makes_rows_drift_apart() {
     let mut config = moon_config();
     config.ui.status_icons.frame_phase = crate::config::StatusFramePhase::PerRow;
     config.ui.status_icons.frame_speed_spread =
@@ -506,11 +580,13 @@ fn speed_spread_makes_rows_drift_apart_and_shortens_the_clock() {
     state.set_pane_surface(surface());
     let epoch = state.config.status_icons.epoch();
     state.compose_at(106, 30, epoch).expect("frame");
-    // The clock follows the fastest row: 400 ms * (1 - 0.5).
-    assert_eq!(
-        state.config.status_icons.next_frame_at(epoch),
-        Some(epoch + Duration::from_millis(200))
-    );
+    // No row is slower than 400 ms * (1 + 0.5), the aggregate clock runs on 400 ms.
+    let deadline = state
+        .config
+        .status_icons
+        .next_frame_at(epoch)
+        .expect("deadline");
+    assert!(deadline <= epoch + INTERVAL);
     // Rows with different factors do not keep a constant frame difference.
     let mut spreads_seen = std::collections::BTreeSet::new();
     for tick in 0..40 {

@@ -23,18 +23,40 @@ impl ClientShellState {
     /// Fixes the status icon frame of a composition from the rows of the active snapshot
     /// and of every endpoint that is not collapsed.
     fn begin_status_frames(&mut self, now: std::time::Instant) {
-        let snapshots = self.snapshot.as_deref().into_iter().chain(
-            self.endpoints
-                .iter()
-                .filter(|endpoint| !self.collapsed_endpoints.contains(&endpoint.endpoint_id))
-                .filter_map(|endpoint| endpoint.snapshot.as_deref()),
-        );
+        let local = self.snapshot.as_deref().map(|snapshot| {
+            (
+                crate::client::endpoint::ClientEndpointId::Local.phase_key(),
+                snapshot,
+            )
+        });
+        let remote = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| !self.collapsed_endpoints.contains(&endpoint.endpoint_id))
+            .filter_map(|endpoint| {
+                endpoint
+                    .snapshot
+                    .as_deref()
+                    .map(|snapshot| (endpoint.endpoint_id.phase_key(), snapshot))
+            });
         self.config.status_icons.begin_composition(
             now,
-            snapshots.flat_map(|snapshot| {
-                let workspaces = snapshot.workspaces.iter().map(|row| row.agent_status);
-                let tabs = snapshot.tabs.iter().map(|row| row.agent_status);
-                let agents = snapshot.agents.iter().map(|row| row.agent_status);
+            local.into_iter().chain(remote).flat_map(|(key, snapshot)| {
+                // Workspaces and agents are drawn with a phase seed of their own,
+                // tabs only as aggregates.
+                let workspaces = snapshot.workspaces.iter().map(move |row| {
+                    (
+                        row.agent_status,
+                        super::status_frames::row_phase(key, &row.workspace_id),
+                    )
+                });
+                let tabs = snapshot.tabs.iter().map(|row| (row.agent_status, None));
+                let agents = snapshot.agents.iter().map(move |row| {
+                    (
+                        row.agent_status,
+                        super::status_frames::row_phase(key, &row.pane_id),
+                    )
+                });
                 workspaces.chain(tabs).chain(agents)
             }),
         );
