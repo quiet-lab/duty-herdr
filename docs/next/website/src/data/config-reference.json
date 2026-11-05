@@ -1061,6 +1061,36 @@
           ]
         },
         {
+          "key": "ui.status_icons.idle",
+          "type": "string",
+          "default": "unset",
+          "description": "Override the status icon shown for idle agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+        },
+        {
+          "key": "ui.status_icons.working",
+          "type": "string",
+          "default": "unset",
+          "description": "Override the status icon shown for working agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+        },
+        {
+          "key": "ui.status_icons.blocked",
+          "type": "string",
+          "default": "unset",
+          "description": "Override the status icon shown for blocked agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+        },
+        {
+          "key": "ui.status_icons.done",
+          "type": "string",
+          "default": "unset",
+          "description": "Override the status icon shown for finished agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+        },
+        {
+          "key": "ui.status_icons.unknown",
+          "type": "string",
+          "default": "unset",
+          "description": "Override the status icon shown for agents in an unknown state. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",
