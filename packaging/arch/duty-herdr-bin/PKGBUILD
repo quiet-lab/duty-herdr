@@ -1,0 +1,20 @@
+# Maintainer: quiet-lab
+# Шаблон: pkgver и sha256sums подставляет scripts/release-local.sh (sed в копии
+# каталога сборки); значения ниже служат только для проверки формата.
+pkgname=duty-herdr-bin
+pkgver=0.9.5
+pkgrel=1
+pkgdesc='herdr: форк duty (значки состояния, focused_tab, обновление с Releases форка)'
+arch=('x86_64')
+url='https://github.com/quiet-lab/duty-herdr'
+license=('Apache-2.0')
+provides=('herdr')
+conflicts=('herdr' 'herdr-bin')
+options=('!strip')
+# Файл с версией в имени: сценарий выпуска кладёт его в SRCDEST заранее.
+source=("herdr-linux-x86_64-${pkgver}::https://github.com/quiet-lab/duty-herdr/releases/download/duty-v${pkgver}/herdr-linux-x86_64")
+sha256sums=('SKIP')
+
+package() {
+  install -Dm755 "${srcdir}/herdr-linux-x86_64-${pkgver}" "${pkgdir}/usr/bin/herdr"
+}
