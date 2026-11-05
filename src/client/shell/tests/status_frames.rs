@@ -269,38 +269,36 @@ fn animated_state_leaving_the_view_disarms_the_timer() {
 }
 
 #[test]
-fn wide_frames_cut_off_by_the_collapsed_sidebar_do_not_arm_the_timer() {
-    let mut state = moon_state(working_snapshot());
-    state.sidebar_collapsed = true;
-    let epoch = state.config.status_icons.epoch();
-    let frame = state.compose_at(106, 30, epoch).expect("frame");
-    assert!(frame
-        .cells
-        .iter()
-        .all(|cell| !MOON.contains(&cell.symbol.as_str())));
-    assert!(!state.tick_status_frame(epoch + INTERVAL, false));
-    assert_eq!(state.timer_delay(epoch), Duration::from_millis(100));
-}
-
-#[test]
-fn rows_without_an_icon_token_do_not_arm_the_timer() {
+fn frames_of_two_graphemes_keep_the_animation_going() {
     let mut config = moon_config();
-    config.ui.sidebar.agents.rows = vec![vec![AgentSidebarToken::Agent]];
-    config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+    config.ui.status_icons.working =
+        Some(StatusIconFrames::new(vec!["..".into(), "o.".into()]).expect("two cell frames"));
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(working_snapshot()));
     state.set_pane_surface(surface());
     let epoch = state.config.status_icons.epoch();
-    let frame = state.compose_at(106, 30, epoch).expect("frame");
-    let text = frame_rows(&frame).join("\n");
-    assert!(
-        frame
-            .cells
-            .iter()
-            .all(|cell| !MOON.contains(&cell.symbol.as_str())),
-        "{text}"
-    );
-    assert!(!state.tick_status_frame(epoch + INTERVAL, false));
+    state.compose_at(106, 30, epoch).expect("frame");
+    assert!(state.tick_status_frame(epoch + INTERVAL, false));
+    let text = |state: &mut ClientShellState, now| {
+        frame_rows(&state.compose_at(106, 30, now).expect("frame")).join("\n")
+    };
+    assert!(text(&mut state, epoch).contains(".. client-shell"));
+    assert!(text(&mut state, epoch + INTERVAL).contains("o. client-shell"));
+}
+
+#[test]
+fn unavailable_screen_keeps_the_sidebar_animated() {
+    let mut state = moon_state(working_snapshot());
+    state.invalidate_pane_surface();
+    let epoch = state.config.status_icons.epoch();
+    let first = state.compose_at(106, 30, epoch).expect("unavailable frame");
+    assert!(first.cells.iter().any(|cell| cell.symbol == MOON[0]));
+    assert!(state.tick_status_frame(epoch + INTERVAL, false));
+    let next = state
+        .compose_at(106, 30, epoch + INTERVAL)
+        .expect("unavailable frame");
+    assert!(next.cells.iter().any(|cell| cell.symbol == MOON[1]));
+    assert!(next.cells.iter().all(|cell| cell.symbol != MOON[0]));
 }
 
 #[test]

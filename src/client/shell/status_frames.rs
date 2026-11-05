@@ -28,13 +28,21 @@ pub(super) fn frame_index(tick: u64, frames: usize) -> usize {
     }
 }
 
+const ALL_STATUSES: [AgentStatus; 5] = [
+    AgentStatus::Idle,
+    AgentStatus::Working,
+    AgentStatus::Blocked,
+    AgentStatus::Done,
+    AgentStatus::Unknown,
+];
+
 /// `[ui.status_icons]` together with the frame of the composition being drawn.
 #[derive(Debug)]
 pub(crate) struct ShellStatusIcons {
     configured: StatusIcons,
     epoch: Instant,
     tick: u64,
-    /// Whether the last composed frame shows an animated icon.
+    /// Whether the current view has a row in a state with an animated icon.
     animated_visible: bool,
 }
 
@@ -73,41 +81,28 @@ impl ShellStatusIcons {
         frame_tick(now.saturating_duration_since(self.epoch), self.interval())
     }
 
-    /// Fixes the frame for one composition.
-    pub(super) fn begin_composition(&mut self, now: Instant) {
+    /// Fixes the frame for one composition and records whether a row of the view is
+    /// in an animated state. The statuses are the rows' data, so nothing depends on
+    /// how a frame is laid out in cells. A row that shows no icon, for lack of a token
+    /// or of width, costs a repaint without a visible change; a missed row would stop
+    /// the animation. Without animated icons in the configuration no row is read.
+    pub(super) fn begin_composition(
+        &mut self,
+        now: Instant,
+        mut statuses: impl Iterator<Item = AgentStatus>,
+    ) {
         self.tick = self.tick_at(now);
-    }
-
-    /// Records whether the composed cells show the current frame of an animated
-    /// icon. Reading the result of the composition covers every reason for an icon
-    /// to be absent: no icon token in a row, a cell too narrow, an opaque overlay.
-    /// A pane printing the same symbol only costs a repaint without a visible change.
-    /// Without animated icons in the configuration no cell is read.
-    pub(super) fn observe_composition<'a>(&mut self, mut cells: impl Iterator<Item = &'a str>) {
-        let current = [
-            AgentStatus::Idle,
-            AgentStatus::Working,
-            AgentStatus::Blocked,
-            AgentStatus::Done,
-            AgentStatus::Unknown,
-        ]
-        .map(|status| {
+        let animated = ALL_STATUSES.map(|status| {
             self.frames_for(status)
-                .filter(|frames| frames.is_animated())
-                .and_then(|_| self.override_for(status))
+                .is_some_and(StatusIconFrames::is_animated)
         });
-        self.animated_visible = current.iter().any(Option::is_some)
-            && cells.any(|cell| current.iter().flatten().any(|frame| *frame == cell));
-    }
-
-    /// Forgets visibility when the composition draws no status icons.
-    pub(super) fn clear_visibility(&mut self) {
-        self.animated_visible = false;
-    }
-
-    #[cfg(test)]
-    fn animated_visible(&self) -> bool {
-        self.animated_visible
+        self.animated_visible = animated.contains(&true)
+            && statuses.any(|status| {
+                ALL_STATUSES
+                    .iter()
+                    .zip(animated)
+                    .any(|(candidate, animated)| animated && *candidate == status)
+            });
     }
 
     /// WARNING: the frame period is a timer, an exception to the station's ban on
@@ -199,19 +194,18 @@ mod tests {
     }
 
     #[test]
-    fn deadline_exists_only_while_a_composition_shows_an_animated_icon() {
+    fn deadline_exists_only_while_a_row_is_in_an_animated_state() {
         let mut icons = animated_icons();
         let start = icons.epoch;
-        icons.begin_composition(start);
         assert_eq!(icons.next_frame_at(start), None);
         assert!(!icons.frame_stale(start + Duration::from_secs(10)));
 
-        // Choosing an icon does not make it visible, and neither do other symbols.
-        assert_eq!(icons.override_for(AgentStatus::Working), Some("🌑"));
-        icons.observe_composition(["z", "a", "🌒"].into_iter());
+        // A static override and a status without an override do not animate.
+        icons.begin_composition(start, [AgentStatus::Idle, AgentStatus::Done].into_iter());
         assert_eq!(icons.next_frame_at(start), None);
+        assert!(!icons.frame_stale(start + Duration::from_secs(10)));
 
-        icons.observe_composition(["z", "🌑"].into_iter());
+        icons.begin_composition(start, [AgentStatus::Idle, AgentStatus::Working].into_iter());
         assert_eq!(
             icons.next_frame_at(start + Duration::from_millis(100)),
             Some(start + Duration::from_millis(400))
@@ -221,9 +215,11 @@ mod tests {
             Some(start + Duration::from_millis(800))
         );
 
-        // The next composition without the icon removes the deadline.
-        icons.begin_composition(start + Duration::from_millis(400));
-        icons.observe_composition(["z"].into_iter());
+        // The next composition without such a row removes the deadline.
+        icons.begin_composition(
+            start + Duration::from_millis(400),
+            [AgentStatus::Idle].into_iter(),
+        );
         assert_eq!(icons.next_frame_at(start), None);
     }
 
@@ -231,14 +227,16 @@ mod tests {
     fn frame_is_stale_only_after_the_period_ends() {
         let mut icons = animated_icons();
         let start = icons.epoch;
-        icons.begin_composition(start);
-        icons.observe_composition(["🌑"].into_iter());
+        icons.begin_composition(start, [AgentStatus::Working].into_iter());
+        assert_eq!(icons.override_for(AgentStatus::Working), Some("🌑"));
         assert!(!icons.frame_stale(start + Duration::from_millis(399)));
         assert!(icons.frame_stale(start + Duration::from_millis(400)));
 
-        icons.begin_composition(start + Duration::from_millis(400));
+        icons.begin_composition(
+            start + Duration::from_millis(400),
+            [AgentStatus::Working].into_iter(),
+        );
         assert_eq!(icons.override_for(AgentStatus::Working), Some("🌒"));
-        icons.observe_composition(["🌒"].into_iter());
         assert!(!icons.frame_stale(start + Duration::from_millis(799)));
     }
 
@@ -249,9 +247,8 @@ mod tests {
             ..StatusIcons::default()
         });
         let start = icons.epoch;
-        icons.begin_composition(start);
+        icons.begin_composition(start, [AgentStatus::Working].into_iter());
         assert_eq!(icons.override_for(AgentStatus::Working), Some("x"));
-        icons.observe_composition(["x"].into_iter());
         assert_eq!(icons.next_frame_at(start), None);
     }
 
@@ -259,12 +256,11 @@ mod tests {
     fn reload_keeps_the_epoch_and_drops_visibility() {
         let mut icons = animated_icons();
         let start = icons.epoch;
-        icons.begin_composition(start);
-        icons.observe_composition(["🌑"].into_iter());
-        assert!(icons.animated_visible());
+        icons.begin_composition(start, [AgentStatus::Working].into_iter());
+        assert!(icons.animated_visible);
         icons.set_configured(StatusIcons::default());
         assert_eq!(icons.epoch, start);
-        assert!(!icons.animated_visible());
+        assert!(!icons.animated_visible);
         assert_eq!(icons.override_for(AgentStatus::Working), None);
     }
 }

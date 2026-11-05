@@ -20,6 +20,24 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
+    /// Fixes the status icon frame of a composition from the rows of every endpoint.
+    fn begin_status_frames(&mut self, now: std::time::Instant) {
+        let snapshots = self.snapshot.as_deref().into_iter().chain(
+            self.endpoints
+                .iter()
+                .filter_map(|endpoint| endpoint.snapshot.as_deref()),
+        );
+        self.config.status_icons.begin_composition(
+            now,
+            snapshots.flat_map(|snapshot| {
+                let workspaces = snapshot.workspaces.iter().map(|row| row.agent_status);
+                let tabs = snapshot.tabs.iter().map(|row| row.agent_status);
+                let agents = snapshot.agents.iter().map(|row| row.agent_status);
+                workspaces.chain(tabs).chain(agents)
+            }),
+        );
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -165,6 +183,7 @@ impl ClientShellState {
     ) -> Option<crate::client::frame_output::ComposedFrame> {
         self.last_composed_at = Some(now);
         self.selection_repaint_deadline = None;
+        self.begin_status_frames(now);
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
             self.reveal_mobile_workspace = true;
@@ -182,7 +201,6 @@ impl ClientShellState {
                     && self.navigation_target_valid(&pending.target)
             });
         if self.snapshot.is_none() || self.pane_surface.is_none() {
-            self.config.status_icons.clear_visibility();
             return Some(self.compose_unavailable(cols, rows).into());
         }
         // Do not compose a retained surface while waiting for its matching snapshot or
@@ -211,7 +229,6 @@ impl ClientShellState {
             ),
             _ => (None, None),
         };
-        self.config.status_icons.begin_composition(now);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
         self.hits = render::render_shell(
             &mut buffer,
@@ -729,9 +746,6 @@ impl ClientShellState {
             self.hits.pane_splits.clear();
             self.hits.popup = None;
         }
-        self.config
-            .status_icons
-            .observe_composition(frame.cells.iter().map(|cell| cell.symbol.as_str()));
         let graphics = self.compose_graphics(layout, &occlusion);
         Some(crate::client::frame_output::ComposedFrame { frame, graphics })
     }

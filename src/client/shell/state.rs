@@ -1893,7 +1893,8 @@ impl ClientShellState {
     /// Whether the status icon frame on screen is out of date and a repaint can show
     /// the new one. The repaint reuses the retained pane surface and the snapshot. A
     /// frozen presentation would discard the frame after `compose` has consumed its
-    /// graphics state, and an incoherent surface composes nothing.
+    /// graphics state, and a surface waiting for its snapshot composes nothing. Without
+    /// a surface or a snapshot `compose` draws the unavailable screen with its sidebar.
     pub(crate) fn tick_status_frame(
         &self,
         now: std::time::Instant,
@@ -1901,7 +1902,9 @@ impl ClientShellState {
     ) -> bool {
         !presentation_frozen
             && self.config.status_icons.frame_stale(now)
-            && self.pane_surface_coherent()
+            && (self.snapshot.is_none()
+                || self.pane_surface.is_none()
+                || self.pane_surface_coherent())
     }
 
     pub(super) fn pane_surface_coherent(&self) -> bool {
