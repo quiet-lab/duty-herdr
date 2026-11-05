@@ -22,13 +22,23 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Stream as _;
 use serde::{Deserialize, Deserializer};
 
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+// duty-herdr fork: updates come from the fork's GitHub Releases, not herdr.dev.
+pub(crate) const STABLE_UPDATE_MANIFEST_URL: &str =
+    "https://github.com/quiet-lab/duty-herdr/releases/latest/download/latest.json";
+// duty-herdr fork: the fork publishes no preview channel.
+pub(crate) const PREVIEW_CHANNEL_UNAVAILABLE: &str = "preview channel is not published for duty-herdr; run `herdr channel set stable` to update from the fork's GitHub Releases";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
 const HERDR_UPDATE_COMMAND: &str = "herdr update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
 const MISE_UPDATE_COMMAND: &str = "mise upgrade herdr";
 const NIX_UPDATE_COMMAND: &str = "update through Nix";
+const PACMAN_UPDATE_COMMAND: &str = "paru -Syu duty-herdr-bin";
+#[cfg(target_os = "linux")]
+const PACMAN_LOCAL_DB_DIR: &str = "/var/lib/pacman/local";
+#[cfg(any(target_os = "linux", test))]
+const PACMAN_PACKAGE_NAME: &str = "duty-herdr-bin";
+#[cfg(any(target_os = "linux", test))]
+const PACMAN_INSTALLED_EXE_PATH: &str = "/usr/bin/herdr";
 const MISE_INSTALLS_DIR_ENV: &str = "MISE_INSTALLS_DIR";
 const FAKE_UPDATE_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_VERSION";
 const FAKE_UPDATE_NOTES_VERSION_ENV: &str = "HERDR_FAKE_UPDATE_NOTES_VERSION";
@@ -203,6 +213,9 @@ struct UpdateManifest {
     #[cfg(not(windows))]
     protocol: Option<u32>,
     notes: String,
+    /// duty-herdr fork: release tag that identifies builds of the same Cargo version.
+    #[serde(default)]
+    build_id: Option<String>,
     assets: BTreeMap<String, AssetRef>,
     #[serde(default)]
     sha256: BTreeMap<String, String>,
@@ -329,10 +342,6 @@ fn fetch_update_manifest() -> Result<UpdateManifest, String> {
     fetch_json_manifest(STABLE_UPDATE_MANIFEST_URL)
 }
 
-fn fetch_preview_manifest() -> Result<PreviewManifest, String> {
-    fetch_json_manifest(PREVIEW_UPDATE_MANIFEST_URL)
-}
-
 fn fetch_json_manifest<T>(url: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
@@ -385,11 +394,19 @@ fn release_info_from_manifest(
     manifest: &UpdateManifest,
     current: &Version,
     installed_is_preview: bool,
+    installed_build_id: Option<&str>,
 ) -> Result<Option<ReleaseInfo>, String> {
     let latest = Version::parse(&manifest.version)
         .ok_or_else(|| format!("invalid version in update manifest: {}", manifest.version))?;
+    let manifest_build_id = manifest_build_id(manifest);
 
-    if !stable_channel_should_install(&latest, current, installed_is_preview) {
+    if !stable_channel_should_install(
+        &latest,
+        current,
+        installed_is_preview,
+        manifest_build_id,
+        installed_build_id,
+    ) {
         return Ok(None); // up to date
     }
 
@@ -420,7 +437,7 @@ fn release_info_from_manifest(
         identity: latest.to_string(),
         version: latest,
         channel: UpdateChannel::Stable,
-        build_id: None,
+        build_id: manifest_build_id.map(str::to_string),
         commit: None,
         #[cfg(not(windows))]
         target_protocol: manifest.protocol,
@@ -434,12 +451,28 @@ fn release_info_from_manifest(
     }))
 }
 
+fn manifest_build_id(manifest: &UpdateManifest) -> Option<&str> {
+    manifest
+        .build_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|build_id| !build_id.is_empty())
+}
+
+/// duty-herdr fork: a release of the same Cargo version is an update when the
+/// manifest names a different build. A build without `HERDR_BUILD_ID` (local dev
+/// build) differs from every published build of its version.
 fn stable_channel_should_install(
     latest: &Version,
     current: &Version,
     installed_is_preview: bool,
+    manifest_build_id: Option<&str>,
+    installed_build_id: Option<&str>,
 ) -> bool {
-    installed_is_preview || latest > current
+    installed_is_preview
+        || latest > current
+        || (latest == current
+            && manifest_build_id.is_some_and(|build_id| installed_build_id != Some(build_id)))
 }
 
 fn preview_display_version(base_version: &str, build_id: &str) -> String {
@@ -568,20 +601,18 @@ fn release_info_from_manifests(
         tracing::info!("waiting for the first stable Windows release");
         return Ok(None);
     }
-    release_info_from_manifest(stable, current, installed_is_preview)
+    release_info_from_manifest(stable, current, installed_is_preview, installed_build_id)
 }
 
 /// Check the hosted update manifests for the latest release. Returns release info if newer.
 fn check_latest() -> Result<Option<ReleaseInfo>, String> {
+    if UpdateChannel::configured() == UpdateChannel::Preview {
+        return Err(PREVIEW_CHANNEL_UNAVAILABLE.into());
+    }
     let manifest = fetch_update_manifest()?;
-    let preview = if UpdateChannel::configured() == UpdateChannel::Preview {
-        Some(fetch_preview_manifest()?)
-    } else {
-        None
-    };
     let release = release_info_from_manifests(
         &manifest,
-        preview.as_ref(),
+        None,
         &Version::current(),
         crate::build_info::is_preview(),
         crate::build_info::build_id(),
@@ -1929,7 +1960,9 @@ fn print_running_session_update_outcomes(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn update_install_command() -> &'static str {
-    if is_homebrew_managed_install() {
+    if is_pacman_managed_install() {
+        PACMAN_UPDATE_COMMAND
+    } else if is_homebrew_managed_install() {
         HOMEBREW_UPDATE_COMMAND
     } else if is_mise_managed_install() {
         MISE_UPDATE_COMMAND
@@ -1983,17 +2016,60 @@ fn is_mise_managed_install() -> bool {
     is_mise_managed_exe_path_following_links(&current_exe)
 }
 
-pub(crate) fn preview_channel_rejection_for_current_install() -> Option<&'static str> {
+/// duty-herdr fork: the `duty-herdr-bin` pacman package owns `/usr/bin/herdr`.
+#[cfg(target_os = "linux")]
+fn is_pacman_managed_install() -> bool {
     let Ok(current_exe) = env::current_exe() else {
-        return None;
+        return false;
     };
 
-    preview_channel_rejection_for_exe_path(&current_exe)
+    is_pacman_managed_exe_path(&current_exe, Path::new(PACMAN_LOCAL_DB_DIR))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_pacman_managed_install() -> bool {
+    false
+}
+
+/// Reads the pacman local database directly (`<db>/duty-herdr-bin-<ver>-<rel>/files`)
+/// instead of running pacman.
+#[cfg(any(target_os = "linux", test))]
+fn is_pacman_managed_exe_path(path: &Path, local_db_dir: &Path) -> bool {
+    if path != Path::new(PACMAN_INSTALLED_EXE_PATH) {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(local_db_dir) else {
+        return false;
+    };
+    let owned_file = PACMAN_INSTALLED_EXE_PATH.trim_start_matches('/');
+    let package_prefix = format!("{PACMAN_PACKAGE_NAME}-");
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let Some(version) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&package_prefix))
+        else {
+            return false;
+        };
+        // `duty-herdr-bin-debug-…` and similar packages are not the binary package.
+        if !version.starts_with(|c: char| c.is_ascii_digit()) {
+            return false;
+        }
+        fs::read_to_string(entry.path().join("files"))
+            .is_ok_and(|files| files.lines().any(|line| line.trim() == owned_file))
+    })
+}
+
+pub(crate) fn preview_channel_rejection_for_current_install() -> Option<&'static str> {
+    // duty-herdr fork: no install can follow a preview channel.
+    Some(PREVIEW_CHANNEL_UNAVAILABLE)
 }
 
 pub(crate) fn package_manager_channel_update_guidance_for_current_install() -> Option<&'static str>
 {
-    if is_homebrew_managed_install() {
+    if is_pacman_managed_install() {
+        Some("Use `paru -Syu duty-herdr-bin` (or `pacman -Syu`) to update pacman installs.")
+    } else if is_homebrew_managed_install() {
         Some("Use `brew update && brew upgrade herdr` to update Homebrew installs.")
     } else if is_mise_managed_install() {
         Some("Use `mise upgrade herdr` to update mise installs.")
@@ -2004,6 +2080,8 @@ pub(crate) fn package_manager_channel_update_guidance_for_current_install() -> O
     }
 }
 
+// duty-herdr fork: kept for the upstream path tests; the fork rejects preview for every install.
+#[cfg(test)]
 fn preview_channel_rejection_for_exe_path(path: &Path) -> Option<&'static str> {
     if is_homebrew_managed_exe_path_following_links(path) {
         Some(
@@ -2182,6 +2260,12 @@ fn preserve_preview_channel_for_install(
 /// Manual self-update command (`herdr update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
     let channel = UpdateChannel::configured();
+
+    if is_pacman_managed_install() {
+        return Err(format!(
+            "self-update is disabled for pacman installs of duty-herdr-bin; run `{PACMAN_UPDATE_COMMAND}` (or `pacman -Syu`)"
+        ));
+    }
 
     if is_homebrew_managed_install() {
         if channel == UpdateChannel::Preview {
@@ -4076,7 +4160,7 @@ mod tests {
         let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
 
         assert!(
-            release_info_from_manifest(&manifest, &Version::current(), false)
+            release_info_from_manifest(&manifest, &Version::current(), false, None)
                 .unwrap_err()
                 .contains("missing a SHA-256 checksum")
         );
@@ -4107,7 +4191,7 @@ mod tests {
 
         let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
         handle_manifest_announcement(&manifest.version, manifest.announcement.as_ref());
-        let release = release_info_from_manifest(&manifest, &Version::current(), false)
+        let release = release_info_from_manifest(&manifest, &Version::current(), false, None)
             .unwrap()
             .expect("release info");
 
@@ -4122,13 +4206,153 @@ mod tests {
         assert!(stable_channel_should_install(
             &latest_stable,
             &installed_base,
-            true
+            true,
+            None,
+            None
         ));
         assert!(!stable_channel_should_install(
             &latest_stable,
             &installed_base,
-            false
+            false,
+            None,
+            None
         ));
+    }
+
+    #[test]
+    fn fork_stable_update_decision_uses_version_then_build_id() {
+        let v095 = Version::parse("0.9.5").unwrap();
+        let v096 = Version::parse("0.9.6").unwrap();
+        let tagged = Some("duty-v0.9.5");
+        let retagged = Some("duty-v0.9.5.1");
+
+        // A greater manifest version is an update regardless of build ids.
+        assert!(stable_channel_should_install(
+            &v096, &v095, false, retagged, tagged
+        ));
+        // Same version, different build id: a rebuilt fork release.
+        assert!(stable_channel_should_install(
+            &v095, &v095, false, retagged, tagged
+        ));
+        // Same version, same build id: up to date.
+        assert!(!stable_channel_should_install(
+            &v095, &v095, false, tagged, tagged
+        ));
+        // A dev build without HERDR_BUILD_ID takes any published build of its version.
+        assert!(stable_channel_should_install(
+            &v095, &v095, false, tagged, None
+        ));
+        // A manifest without build_id keeps the upstream version-only rule.
+        assert!(!stable_channel_should_install(
+            &v095, &v095, false, None, None
+        ));
+        // An older manifest is never a downgrade, even for a dev build.
+        assert!(!stable_channel_should_install(
+            &v095, &v096, false, tagged, None
+        ));
+    }
+
+    #[test]
+    fn fork_manifest_with_build_id_reports_same_version_rebuild() {
+        let (os, arch) = platform_target();
+        let asset_key = format!("{os}-{arch}");
+        let current = Version::current();
+        let json = format!(
+            r####"{{
+                "version": "{current}",
+                "protocol": 22,
+                "endpoint_generation": 1,
+                "notes": "### Changed\n- Fork rebuild",
+                "build_id": "duty-v{current}.1",
+                "assets": {{
+                    "{asset_key}": "https://github.com/quiet-lab/duty-herdr/releases/download/duty-v{current}.1/herdr-{asset_key}"
+                }},
+                "sha256": {{
+                    "{asset_key}": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }}
+            }}"####
+        );
+        let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
+        let build_id = format!("duty-v{current}.1");
+        assert_eq!(manifest_build_id(&manifest), Some(build_id.as_str()));
+
+        let release = release_info_from_manifest(&manifest, &current, false, Some("duty-v0.0.0"))
+            .unwrap()
+            .expect("same version with a different build id is an update");
+        assert_eq!(release.build_id.as_deref(), Some(build_id.as_str()));
+        assert_eq!(release.label(), current.to_string());
+
+        assert!(
+            release_info_from_manifest(&manifest, &current, false, Some(build_id.as_str()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(release_info_from_manifest(&manifest, &current, false, None)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn fork_manifest_url_points_at_fork_releases() {
+        assert_eq!(
+            STABLE_UPDATE_MANIFEST_URL,
+            "https://github.com/quiet-lab/duty-herdr/releases/latest/download/latest.json"
+        );
+        assert_eq!(
+            preview_channel_rejection_for_current_install(),
+            Some(PREVIEW_CHANNEL_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn pacman_package_install_is_detected_from_local_db_files() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-pacman-db-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let exe = Path::new(PACMAN_INSTALLED_EXE_PATH);
+
+        // No database: not a pacman install.
+        assert!(!is_pacman_managed_exe_path(exe, &root));
+
+        // Another package owning herdr (upstream herdr-bin) does not count.
+        let other = root.join("herdr-bin-0.9.5-1");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(
+            other.join("files"),
+            "%FILES%\nusr/\nusr/bin/\nusr/bin/herdr\n",
+        )
+        .unwrap();
+        assert!(!is_pacman_managed_exe_path(exe, &root));
+
+        // A sibling package with the same prefix does not count.
+        let debug = root.join("duty-herdr-bin-debug-0.9.5-1");
+        fs::create_dir_all(&debug).unwrap();
+        fs::write(debug.join("files"), "%FILES%\nusr/bin/herdr\n").unwrap();
+        assert!(!is_pacman_managed_exe_path(exe, &root));
+
+        // The package without the binary in its file list does not count.
+        let package = root.join("duty-herdr-bin-0.9.5.1-1");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("files"), "%FILES%\nusr/\nusr/share/\n").unwrap();
+        assert!(!is_pacman_managed_exe_path(exe, &root));
+
+        fs::write(
+            package.join("files"),
+            "%FILES%\nusr/\nusr/bin/\nusr/bin/herdr\n",
+        )
+        .unwrap();
+        assert!(is_pacman_managed_exe_path(exe, &root));
+
+        // A binary outside /usr/bin is a direct install even with the package present.
+        assert!(!is_pacman_managed_exe_path(
+            Path::new("/home/user/.local/bin/herdr"),
+            &root
+        ));
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

@@ -43,8 +43,10 @@ const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
 const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CURRENT_PROTOCOL: u32 = crate::protocol::PROTOCOL_VERSION;
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+// duty-herdr fork: remote installs use the same fork manifest as `herdr update`.
+const STABLE_UPDATE_MANIFEST_URL: &str = crate::update::STABLE_UPDATE_MANIFEST_URL;
+// duty-herdr fork: GitHub Releases of the fork carry only this binary.
+const FORK_REMOTE_ASSET_KEY: &str = "linux-x86_64";
 const REMOTE_BINARY_ENV_VAR: &str = "HERDR_REMOTE_BINARY";
 const REMOTE_OUTPUT_READY_MARKER: &str = "herdr-remote-output-ready:1";
 const WINDOWS_REMOTE_PATH_MARKER: &str = "herdr-remote-path:1:";
@@ -636,6 +638,8 @@ struct RemoteReleaseMetadata {
     sha256: BTreeMap<String, String>,
 }
 
+// duty-herdr fork: kept for the upstream preview tests; the fork publishes no preview manifest.
+#[cfg(test)]
 #[derive(Deserialize)]
 struct RemotePreviewManifest {
     build_id: String,
@@ -645,6 +649,7 @@ struct RemotePreviewManifest {
     builds: BTreeMap<String, RemotePreviewBuildMetadata>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct RemotePreviewBuildMetadata {
     protocol: u32,
@@ -2734,6 +2739,7 @@ fn remote_asset_info(asset: &RemoteAssetRef) -> RemoteReleaseAsset {
     }
 }
 
+#[cfg(test)]
 fn preview_assets_for_build<'a>(
     manifest: &'a RemotePreviewManifest,
     build_id: &str,
@@ -2749,27 +2755,23 @@ fn preview_assets_for_build<'a>(
     Ok((build.protocol, &build.assets))
 }
 
+/// duty-herdr fork: reject platforms the fork does not publish before any download.
+fn fork_remote_asset_supported(asset_key: &str) -> io::Result<()> {
+    if asset_key == FORK_REMOTE_ASSET_KEY {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "duty-herdr publishes Linux x86_64 binaries only, not {asset_key}; set {REMOTE_BINARY_ENV_VAR}=<path to a herdr build for that host> or install Herdr on the remote host manually"
+    )))
+}
+
 fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
+    fork_remote_asset_supported(asset_key)?;
     if crate::build_info::is_preview() {
-        let build_id = crate::build_info::build_id().ok_or_else(|| {
-            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Herdr on the remote manually")
-        })?;
-        let manifest_bytes = fetch_remote_manifest(PREVIEW_UPDATE_MANIFEST_URL)?;
-        let manifest: RemotePreviewManifest =
-            serde_json::from_slice(&manifest_bytes).map_err(|err| {
-                io::Error::other(format!("failed to parse preview manifest JSON: {err}"))
-            })?;
-        let (protocol, assets) = preview_assets_for_build(&manifest, build_id)?;
-        if protocol != CURRENT_PROTOCOL {
-            return Err(io::Error::other(format!(
-                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching Herdr on the remote host manually"
-            )));
-        }
-        return assets.get(asset_key).map(remote_asset_info).ok_or_else(|| {
-            io::Error::other(format!(
-                "no {asset_key} binary in the preview manifest for build {build_id}"
-            ))
-        });
+        return Err(io::Error::other(format!(
+            "{}; or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr",
+            crate::update::PREVIEW_CHANNEL_UNAVAILABLE
+        )));
     }
 
     let current_version = current_version();
@@ -6019,6 +6021,27 @@ function Get-Process {
                 .and_then(|release| release.protocol),
             None
         );
+    }
+
+    #[test]
+    fn fork_remote_install_uses_fork_manifest_and_linux_x86_64_only() {
+        assert_eq!(
+            STABLE_UPDATE_MANIFEST_URL,
+            "https://github.com/quiet-lab/duty-herdr/releases/latest/download/latest.json"
+        );
+        assert!(fork_remote_asset_supported("linux-x86_64").is_ok());
+        for asset_key in [
+            "linux-aarch64",
+            "macos-aarch64",
+            "macos-x86_64",
+            "windows-x86_64",
+        ] {
+            let err = fork_remote_asset_supported(asset_key).unwrap_err();
+            assert!(
+                err.to_string().contains("Linux x86_64 binaries only"),
+                "{asset_key}: {err}"
+            );
+        }
     }
 
     #[test]
