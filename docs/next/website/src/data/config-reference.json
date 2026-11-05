@@ -536,6 +536,18 @@
           "description": "Close the selected workspace."
         },
         {
+          "key": "keys.move_workspace_up",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the selected workspace up among its level, with its group. Unset by default."
+        },
+        {
+          "key": "keys.move_workspace_down",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Move the selected workspace down among its level, with its group. Unset by default."
+        },
+        {
           "key": "keys.workspace_picker",
           "type": "keybinding",
           "default": "\"prefix+w\"",
