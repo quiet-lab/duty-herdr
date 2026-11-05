@@ -261,7 +261,7 @@ release $version $preview:
 default-config:
     cargo run --release --locked -- --default-config
 
-# Выпуск форка duty-herdr с этой станции, например `just release-local duty-v0.9.5 --dry-run`
+# Release the duty-herdr fork from this machine, e.g. `just release-local duty-v0.9.5 --dry-run`
 [unix]
 release-local tag *args:
     scripts/release-local.sh {{tag}} {{args}}

@@ -75,7 +75,8 @@ run() {
 check() {
     local message="$1"
     shift
-    if "$@"; then
+    # Вывод скрывается только у проверяемой команды, сообщение печатается всегда.
+    if "$@" >/dev/null 2>&1; then
         return 0
     fi
     if [ "$dry_run" -eq 1 ]; then
@@ -98,15 +99,16 @@ echo "== проверки"
 check "дерево не чистое" tree_is_clean
 check "текущая ветвь не duty" on_duty_branch
 check "тег $tag уже существует (локально или в origin)" tag_is_free
-check "gh не авторизован (gh auth status)" gh auth status --hostname github.com >/dev/null 2>&1
+check "gh не авторизован (gh auth status)" gh auth status --hostname github.com
 check "ZIG не задан или не исполняемый" zig_is_set
 
 commit="$(git rev-parse HEAD)"
 
-echo "== cargo fmt, clippy, test"
+# Ворота как у upstream: `just check` требует Windows SDK, поэтому fmt, clippy и `just test`.
+echo "== cargo fmt, clippy, just test"
 run cargo fmt --check
 run cargo clippy --all-targets --locked
-run cargo test --locked
+run just test
 
 echo "== сборка $tag ($commit)"
 run env HERDR_BUILD_ID="$tag" HERDR_BUILD_COMMIT="$commit" cargo build --release --locked
@@ -191,21 +193,39 @@ run env -C "$out" repo-add duty-herdr.db.tar.gz "$pkg"
 run env -C "$out" cp --remove-destination -L duty-herdr.db.tar.gz duty-herdr.db
 run env -C "$out" cp --remove-destination -L duty-herdr.files.tar.gz duty-herdr.files
 
+echo "== выпуск $tag"
+# gh сам создаёт тег в origin на коммите --target; при сбое выпуск и тег
+# удаляются, чтобы повтор того же тега проходил.
+rollback_release() {
+    echo "ошибка: выпуск $tag не создан, удаляю выпуск и тег в origin" >&2
+    gh release delete "$tag" --repo "$REPO_SLUG" --yes --cleanup-tag >/dev/null 2>&1 || true
+    git tag -d "$tag" >/dev/null 2>&1 || true
+}
+if [ "$dry_run" -eq 1 ]; then
+    run gh release create "$tag" --repo "$REPO_SLUG" --target "$commit" --title "$tag" --notes-file "$out/notes.md" \
+        "$out/herdr-linux-x86_64" "$out/latest.json" "$out/$pkg" \
+        "$out/duty-herdr.db" "$out/duty-herdr.db.tar.gz" \
+        "$out/duty-herdr.files" "$out/duty-herdr.files.tar.gz"
+    echo "[dry-run] git fetch origin refs/tags/$tag:refs/tags/$tag"
+else
+    if ! gh release create "$tag" --repo "$REPO_SLUG" --target "$commit" --title "$tag" --notes-file "$out/notes.md" \
+        "$out/herdr-linux-x86_64" \
+        "$out/latest.json" \
+        "$out/$pkg" \
+        "$out/duty-herdr.db" \
+        "$out/duty-herdr.db.tar.gz" \
+        "$out/duty-herdr.files" \
+        "$out/duty-herdr.files.tar.gz"; then
+        rollback_release
+        exit 1
+    fi
+    git fetch origin "refs/tags/$tag:refs/tags/$tag"
+fi
+
+# Локальная установка только после успешного выпуска.
 if [ "$install_local" -eq 1 ]; then
     echo "== установка в ~/.local/bin"
     run install -Dm755 "$bin" "$HOME/.local/bin/herdr"
 fi
-
-echo "== тег и выпуск"
-run git tag -a "$tag" -m "$tag" "$commit"
-run git push origin "$tag"
-run gh release create "$tag" --repo "$REPO_SLUG" --title "$tag" --notes-file "$out/notes.md" \
-    "$out/herdr-linux-x86_64" \
-    "$out/latest.json" \
-    "$out/$pkg" \
-    "$out/duty-herdr.db" \
-    "$out/duty-herdr.db.tar.gz" \
-    "$out/duty-herdr.files" \
-    "$out/duty-herdr.files.tar.gz"
 
 echo "готово: $tag"
