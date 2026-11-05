@@ -32,6 +32,7 @@ mod render;
 mod scroll;
 mod settings;
 mod state;
+mod status_frames;
 mod surface_patch;
 mod text_editor;
 mod word_selection;
@@ -175,28 +176,16 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     hash
 }
 
-/// Returns the configured `[ui.status_icons]` override for `status`, or the
-/// built-in symbol of `style` when no override is set.
+/// Returns the current frame of the `[ui.status_icons]` override for `status`,
+/// or the built-in symbol of `style` when no override is set.
 fn status_icon(
     status: crate::api::schema::AgentStatus,
     style: crate::config::StatusIndicatorStyle,
-    icons: &crate::config::StatusIcons,
+    icons: &status_frames::ShellStatusIcons,
 ) -> &str {
-    status_icon_override(status, icons).unwrap_or_else(|| builtin_status_icon(status, style))
-}
-
-fn status_icon_override(
-    status: crate::api::schema::AgentStatus,
-    icons: &crate::config::StatusIcons,
-) -> Option<&str> {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Idle => icons.idle.as_deref(),
-        AgentStatus::Working => icons.working.as_deref(),
-        AgentStatus::Blocked => icons.blocked.as_deref(),
-        AgentStatus::Done => icons.done.as_deref(),
-        AgentStatus::Unknown => icons.unknown.as_deref(),
-    }
+    icons
+        .override_for(status)
+        .unwrap_or_else(|| builtin_status_icon(status, style))
 }
 
 fn builtin_status_icon(
@@ -220,7 +209,10 @@ fn builtin_status_icon(
     }
 }
 
-fn status_dot(status: crate::api::schema::AgentStatus, icons: &crate::config::StatusIcons) -> &str {
+fn status_dot(
+    status: crate::api::schema::AgentStatus,
+    icons: &status_frames::ShellStatusIcons,
+) -> &str {
     status_icon(status, crate::config::StatusIndicatorStyle::Dots, icons)
 }
 

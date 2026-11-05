@@ -306,7 +306,7 @@ fn render_agent_summary(
             continue;
         }
         let symbol = match (
-            status_icon_override(status, &config.status_icons),
+            config.status_icons.override_for(status),
             config.status_indicators,
             status,
         ) {

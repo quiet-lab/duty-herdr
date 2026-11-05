@@ -20,6 +20,26 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
+    /// Fixes the status icon frame of a composition from the rows of the active snapshot
+    /// and of every endpoint that is not collapsed.
+    fn begin_status_frames(&mut self, now: std::time::Instant) {
+        let snapshots = self.snapshot.as_deref().into_iter().chain(
+            self.endpoints
+                .iter()
+                .filter(|endpoint| !self.collapsed_endpoints.contains(&endpoint.endpoint_id))
+                .filter_map(|endpoint| endpoint.snapshot.as_deref()),
+        );
+        self.config.status_icons.begin_composition(
+            now,
+            snapshots.flat_map(|snapshot| {
+                let workspaces = snapshot.workspaces.iter().map(|row| row.agent_status);
+                let tabs = snapshot.tabs.iter().map(|row| row.agent_status);
+                let agents = snapshot.agents.iter().map(|row| row.agent_status);
+                workspaces.chain(tabs).chain(agents)
+            }),
+        );
+    }
+
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
         let layout = self.layout(cols, rows);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
@@ -152,8 +172,20 @@ impl ClientShellState {
         cols: u16,
         rows: u16,
     ) -> Option<crate::client::frame_output::ComposedFrame> {
-        self.last_composed_at = Some(std::time::Instant::now());
+        self.compose_at(cols, rows, std::time::Instant::now())
+    }
+
+    /// `compose` with the clock passed in, so that the status icon frame of a
+    /// composition can be fixed by tests.
+    pub(crate) fn compose_at(
+        &mut self,
+        cols: u16,
+        rows: u16,
+        now: std::time::Instant,
+    ) -> Option<crate::client::frame_output::ComposedFrame> {
+        self.last_composed_at = Some(now);
         self.selection_repaint_deadline = None;
+        self.begin_status_frames(now);
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
             self.reveal_navigation_workspace = true;
             self.reveal_mobile_workspace = true;
@@ -173,18 +205,13 @@ impl ClientShellState {
         if self.snapshot.is_none() || self.pane_surface.is_none() {
             return Some(self.compose_unavailable(cols, rows).into());
         }
-        let snapshot = self.snapshot.as_deref()?;
         // Do not compose a retained surface while waiting for its matching snapshot or
         // connection generation.
-        if self.pending_pane_surface.is_some()
-            || self.pane_surface_generation != self.active_snapshot_generation
-        {
+        if !self.pane_surface_coherent() {
             return None;
         }
+        let snapshot = self.snapshot.as_deref()?;
         let surface = self.pane_surface.as_ref()?;
-        if snapshot.revision != surface.projection_revision {
-            return None;
-        }
         let layout = self.layout(cols, rows);
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);

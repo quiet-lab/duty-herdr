@@ -917,7 +917,8 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
 #[test]
 fn status_icon_prefers_configured_overrides_over_indicator_style() {
     use crate::config::{StatusIcons, StatusIndicatorStyle};
-    let defaults = StatusIcons::default();
+    let defaults =
+        crate::client::shell::status_frames::ShellStatusIcons::new(StatusIcons::default());
     assert_eq!(
         status_icon(AgentStatus::Working, StatusIndicatorStyle::Dots, &defaults),
         "●"
@@ -932,11 +933,11 @@ fn status_icon_prefers_configured_overrides_over_indicator_style() {
     );
     assert_eq!(status_dot(AgentStatus::Idle, &defaults), "○");
 
-    let icons = StatusIcons {
+    let icons = crate::client::shell::status_frames::ShellStatusIcons::new(StatusIcons {
         working: Some("🟡".into()),
         blocked: Some("!".into()),
         ..StatusIcons::default()
-    };
+    });
     for style in [StatusIndicatorStyle::Dots, StatusIndicatorStyle::Symbols] {
         assert_eq!(status_icon(AgentStatus::Working, style, &icons), "🟡");
         assert_eq!(status_icon(AgentStatus::Blocked, style, &icons), "!");

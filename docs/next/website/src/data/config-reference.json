@@ -1074,33 +1074,39 @@
         },
         {
           "key": "ui.status_icons.idle",
-          "type": "string",
+          "type": "string or array of strings",
           "default": "unset",
-          "description": "Override the status icon shown for idle agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+          "description": "Override the status icon shown for idle agents. A non-empty string one or two cells wide without U+FE0F, or a non-empty array of such strings of equal width, shown in a loop as animation frames. When unset, the icon from status_indicators is used."
         },
         {
           "key": "ui.status_icons.working",
-          "type": "string",
+          "type": "string or array of strings",
           "default": "unset",
-          "description": "Override the status icon shown for working agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+          "description": "Override the status icon shown for working agents. A non-empty string one or two cells wide without U+FE0F, or a non-empty array of such strings of equal width, shown in a loop as animation frames. When unset, the icon from status_indicators is used."
         },
         {
           "key": "ui.status_icons.blocked",
-          "type": "string",
+          "type": "string or array of strings",
           "default": "unset",
-          "description": "Override the status icon shown for blocked agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+          "description": "Override the status icon shown for blocked agents. A non-empty string one or two cells wide without U+FE0F, or a non-empty array of such strings of equal width, shown in a loop as animation frames. When unset, the icon from status_indicators is used."
         },
         {
           "key": "ui.status_icons.done",
-          "type": "string",
+          "type": "string or array of strings",
           "default": "unset",
-          "description": "Override the status icon shown for finished agents. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+          "description": "Override the status icon shown for finished agents. A non-empty string one or two cells wide without U+FE0F, or a non-empty array of such strings of equal width, shown in a loop as animation frames. When unset, the icon from status_indicators is used."
         },
         {
           "key": "ui.status_icons.unknown",
-          "type": "string",
+          "type": "string or array of strings",
           "default": "unset",
-          "description": "Override the status icon shown for agents in an unknown state. Any non-empty string one or two cells wide without U+FE0F. When unset, the icon from status_indicators is used."
+          "description": "Override the status icon shown for agents in an unknown state. A non-empty string one or two cells wide without U+FE0F, or a non-empty array of such strings of equal width, shown in a loop as animation frames. When unset, the icon from status_indicators is used."
+        },
+        {
+          "key": "ui.status_icons.frame_interval_ms",
+          "type": "integer",
+          "default": "400",
+          "description": "Time each frame of a status icon with several frames stays on screen, from 100 to 5000 milliseconds."
         },
         {
           "key": "ui.sidebar.agents.row_gap",
