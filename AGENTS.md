@@ -95,6 +95,8 @@ The client-owned TUI endpoint generation is independent from the private same-in
 
 ## Maintainer Workflow
 
+The duty plugin reads project configuration from `.duty/duty.toml`; the schema is `reference/config.md` in the plugin.
+
 This section applies only to verified maintainers as defined under Scope and
 Audience. Everyone else must skip this section and follow the external
 contributor guardrail.
