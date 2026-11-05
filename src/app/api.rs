@@ -796,8 +796,31 @@ impl App {
     }
 
     pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
+        let closed = event.event == crate::api::schema::EventKind::WorkspaceClosed;
         self.run_plugin_event_hooks(&event);
         self.event_hub.push(event);
+        if closed {
+            self.release_orphaned_workspaces();
+        }
+    }
+
+    /// A closed parent releases its children: they become roots, each announced once.
+    pub(crate) fn release_orphaned_workspaces(&mut self) {
+        let cleared = crate::workspace::clear_invalid_parent_links(&mut self.state.workspaces);
+        if !cleared.is_empty() {
+            self.state.mark_session_dirty();
+        }
+        let pending = std::mem::take(&mut self.state.released_workspace_ids);
+        for workspace_id in pending.into_iter().chain(cleared) {
+            if let Some(index) = self
+                .state
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == workspace_id)
+            {
+                self.emit_workspace_updated(index);
+            }
+        }
     }
 
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
@@ -1078,6 +1101,12 @@ impl App {
             }
             Method::WorkspaceMoveBlock(params) => {
                 return self.handle_workspace_move_block(request.id, params);
+            }
+            Method::WorkspaceCreateChild(params) => {
+                return self.handle_workspace_create_child(request.id, params);
+            }
+            Method::WorkspaceSetParent(params) => {
+                return self.handle_workspace_set_parent(request.id, params);
             }
             Method::WorkspaceReportMetadata(params) => {
                 return self.handle_workspace_report_metadata(request.id, params);

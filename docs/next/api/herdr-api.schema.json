@@ -1098,6 +1098,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "parent_workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tab_count": {
               "format": "uint",
               "minimum": 0,
@@ -4380,6 +4386,47 @@
           ],
           "type": "object"
         },
+        "WorkspaceCreateChildParams": {
+          "description": "`workspace.create` with a required parent. The frozen `workspace.create` shape\nstays unchanged: an older server rejects this method instead of ignoring the parent.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "parent_workspace_id": {
+              "type": "string"
+            },
+            "source_workspace_id": {
+              "description": "Workspace whose focused pane supplies the `follow` cwd policy.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "parent_workspace_id"
+          ],
+          "type": "object"
+        },
         "WorkspaceCreateParams": {
           "properties": {
             "cwd": {
@@ -4509,6 +4556,24 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetParentParams": {
+          "description": "`parent_workspace_id: null` clears the link.",
+          "properties": {
+            "parent_workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -5025,6 +5090,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceMoveBlockParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.create_child",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceCreateChildParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_parent",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetParentParams"
             }
           },
           "required": [
@@ -10596,6 +10693,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "parent_workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_count": {
               "format": "uint",

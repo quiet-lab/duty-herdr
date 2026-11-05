@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
-    WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceTarget,
+    WorkspaceCreateChildParams, WorkspaceCreateParams, WorkspaceMoveBlockParams,
+    WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
+    WorkspaceSetParentParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -41,6 +42,79 @@ impl App {
         id: String,
         params: WorkspaceCreateParams,
     ) -> String {
+        self.create_workspace_with_parent(id, params, None)
+    }
+
+    pub(super) fn handle_workspace_create_child(
+        &mut self,
+        id: String,
+        params: WorkspaceCreateChildParams,
+    ) -> String {
+        let Some(parent_index) = self.parse_workspace_id(&params.parent_workspace_id) else {
+            return workspace_not_found(id, &params.parent_workspace_id);
+        };
+        if let Some((code, message)) = self.workspace_parent_error(None, parent_index) {
+            return encode_error(id, code, message);
+        }
+        let parent_id = self.public_workspace_id(parent_index);
+        self.create_workspace_with_parent(id, params.create, Some(parent_id))
+    }
+
+    pub(super) fn handle_workspace_set_parent(
+        &mut self,
+        id: String,
+        params: WorkspaceSetParentParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let parent_id = match params.parent_workspace_id.as_deref() {
+            Some(requested) => {
+                let Some(parent_index) = self.parse_workspace_id(requested) else {
+                    return workspace_not_found(id, requested);
+                };
+                if let Some((code, message)) =
+                    self.workspace_parent_error(Some(index), parent_index)
+                {
+                    return encode_error(id, code, message);
+                }
+                Some(self.public_workspace_id(parent_index))
+            }
+            None => None,
+        };
+        if self.state.workspaces[index].parent_workspace_id != parent_id {
+            self.state.workspaces[index].parent_workspace_id = parent_id;
+            self.state.mark_session_dirty();
+            self.emit_workspace_updated(index);
+        }
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(index),
+            },
+        )
+    }
+
+    fn workspace_parent_error(
+        &self,
+        child: Option<usize>,
+        parent: usize,
+    ) -> Option<(&'static str, &'static str)> {
+        let nodes = self
+            .state
+            .workspaces
+            .iter()
+            .map(crate::workspace::Workspace::tree_node)
+            .collect::<Vec<_>>();
+        crate::workspace_tree::parent_link_error(&nodes, child, parent)
+    }
+
+    fn create_workspace_with_parent(
+        &mut self,
+        id: String,
+        params: WorkspaceCreateParams,
+        parent_workspace_id: Option<String>,
+    ) -> String {
         let source_workspace_index = if params.cwd.is_some() {
             None
         } else {
@@ -67,8 +141,9 @@ impl App {
         };
         match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
             Ok(index) => {
-                if let Some(label) = params.label {
-                    if let Some(workspace) = self.state.workspaces.get_mut(index) {
+                if let Some(workspace) = self.state.workspaces.get_mut(index) {
+                    workspace.parent_workspace_id = parent_workspace_id;
+                    if let Some(label) = params.label {
                         workspace.set_custom_name(label);
                         crate::logging::workspace_renamed(&workspace.id);
                     }
@@ -1013,6 +1088,178 @@ mod tests {
             &event.data,
             EventData::WorkspaceMetadataUpdated { workspace } if workspace.tokens.is_empty()
         )));
+    }
+
+    fn parent_test_app(names: &[&str]) -> (App, crate::api::EventHub) {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        (app, event_hub)
+    }
+
+    fn set_parent(app: &mut App, workspace: usize, parent: Option<usize>) -> String {
+        let workspace_id = app.public_workspace_id(workspace);
+        let parent_workspace_id = parent.map(|parent| app.public_workspace_id(parent));
+        app.handle_workspace_set_parent(
+            "req".into(),
+            WorkspaceSetParentParams {
+                workspace_id,
+                parent_workspace_id,
+            },
+        )
+    }
+
+    fn error_code(response: &str) -> String {
+        serde_json::from_str::<ErrorResponse>(response)
+            .unwrap()
+            .error
+            .code
+    }
+
+    fn worktree_membership(key: &str, linked: bool) -> crate::workspace::WorktreeSpaceMembership {
+        crate::workspace::WorktreeSpaceMembership {
+            key: key.into(),
+            label: key.into(),
+            repo_root: PathBuf::from("/repo"),
+            checkout_path: PathBuf::from("/repo/checkout"),
+            is_linked_worktree: linked,
+        }
+    }
+
+    #[test]
+    fn api_workspace_set_parent_sets_and_clears_with_events() {
+        let (mut app, event_hub) = parent_test_app(&["parent", "child"]);
+        let parent_id = app.public_workspace_id(0);
+        let baseline = event_hub.events_after(0).last().map_or(0, |event| event.0);
+
+        let response = set_parent(&mut app, 1, Some(0));
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorkspaceInfo { workspace } = success.result else {
+            panic!("expected workspace info");
+        };
+        assert_eq!(workspace.parent_workspace_id.as_deref(), Some(&*parent_id));
+        assert_eq!(
+            serde_json::to_value(&workspace).unwrap()["parent_workspace_id"],
+            serde_json::json!(parent_id)
+        );
+
+        set_parent(&mut app, 1, Some(0));
+        set_parent(&mut app, 1, None);
+        assert_eq!(app.state.workspaces[1].parent_workspace_id, None);
+        assert!(serde_json::to_value(app.workspace_info(1))
+            .unwrap()
+            .get("parent_workspace_id")
+            .is_none());
+
+        let updates = event_hub
+            .events_after(baseline)
+            .into_iter()
+            .filter(|(_, event)| matches!(event.event, EventKind::WorkspaceUpdated))
+            .count();
+        assert_eq!(updates, 2, "a repeated identical link emits nothing");
+    }
+
+    #[test]
+    fn api_workspace_set_parent_refuses_cycle_second_level_and_worktree_child() {
+        let (mut app, _) = parent_test_app(&["a", "b", "c", "group-root", "linked", "free"]);
+        assert!(serde_json::from_str::<SuccessResponse>(&set_parent(&mut app, 1, Some(0))).is_ok());
+        app.state.workspaces[3].worktree_space = Some(worktree_membership("repo", false));
+        app.state.workspaces[4].worktree_space = Some(worktree_membership("repo", true));
+
+        assert_eq!(
+            error_code(&set_parent(&mut app, 0, Some(1))),
+            "workspace_parent_nested",
+            "a cycle is a second nesting level"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 2, Some(1))),
+            "workspace_parent_nested"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 0, Some(2))),
+            "workspace_parent_nested",
+            "a parent cannot become a child"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 5, Some(5))),
+            "workspace_parent_self"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 4, Some(5))),
+            "workspace_parent_worktree_child"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 5, Some(4))),
+            "workspace_parent_worktree_child"
+        );
+        assert_eq!(
+            error_code(&set_parent(&mut app, 3, Some(5))),
+            "workspace_parent_worktree_group"
+        );
+        let missing = app.public_workspace_id(5);
+        assert_eq!(
+            error_code(&app.handle_workspace_set_parent(
+                "req".into(),
+                WorkspaceSetParentParams {
+                    workspace_id: missing,
+                    parent_workspace_id: Some("missing".into()),
+                },
+            )),
+            "workspace_not_found"
+        );
+        assert_eq!(app.state.workspaces[5].parent_workspace_id, None);
+    }
+
+    #[test]
+    fn api_workspace_close_of_parent_releases_children_without_group_flag() {
+        let (mut app, event_hub) = parent_test_app(&["parent", "child", "other"]);
+        set_parent(&mut app, 1, Some(0));
+        let parent_id = app.public_workspace_id(0);
+        let child_id = app.public_workspace_id(1);
+        let baseline = event_hub.events_after(0).last().map_or(0, |event| event.0);
+
+        let response = app.handle_workspace_close(
+            "req".into(),
+            WorkspaceCloseParams {
+                workspace_id: parent_id,
+                close_group: false,
+            },
+        );
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.workspaces[0].parent_workspace_id, None);
+        assert!(app.state.released_workspace_ids.is_empty());
+        let events = event_hub.events_after(baseline);
+        assert!(events.iter().any(|(_, event)| matches!(
+            &event.data,
+            EventData::WorkspaceUpdated { workspace }
+                if workspace.workspace_id == child_id
+                    && workspace.parent_workspace_id.is_none()
+        )));
+    }
+
+    #[test]
+    fn joining_worktree_group_releases_explicit_parent() {
+        let (mut app, _) = parent_test_app(&["parent", "child", "linked"]);
+        set_parent(&mut app, 1, Some(0));
+        app.set_worktree_membership(1, worktree_membership("repo", false), false);
+        assert_eq!(
+            app.state.workspaces[1].parent_workspace_id.as_deref(),
+            Some(&*app.public_workspace_id(0)),
+            "a lone worktree root may stay a child"
+        );
+        app.set_worktree_membership(2, worktree_membership("repo", true), false);
+        assert_eq!(app.state.workspaces[1].parent_workspace_id, None);
     }
 
     #[test]

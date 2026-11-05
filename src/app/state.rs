@@ -793,6 +793,8 @@ pub struct AppState {
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
     pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
     pub(crate) public_pane_id_aliases: std::collections::HashMap<String, PaneId>,
+    /// Workspaces that lost their parent and still owe a `workspace.updated` event.
+    pub(crate) released_workspace_ids: Vec<String>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<usize>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
@@ -1039,6 +1041,7 @@ impl AppState {
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
+            released_workspace_ids: Vec::new(),
             workspaces: Vec::new(),
             active: None,
             previous_pane_focus: None,

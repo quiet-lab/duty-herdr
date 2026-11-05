@@ -116,6 +116,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
         }),
         focused: false,
         agent_status: AgentStatus::Idle,
+        parent_workspace_id: None,
     });
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
@@ -427,6 +428,270 @@ fn duplicate_repo_parent_drag_does_not_target_its_own_move_block() {
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(drop.actions.is_empty());
+}
+
+fn explicit_tree_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    let mut child = projected.workspaces[0].clone();
+    child.workspace_id = "ws_child".into();
+    child.number = 2;
+    child.label = "child-task".into();
+    child.custom_label = true;
+    child.focused = false;
+    child.parent_workspace_id = Some("ws_1".into());
+    let mut other = child.clone();
+    other.workspace_id = "ws_other".into();
+    other.number = 3;
+    other.label = "other".into();
+    other.parent_workspace_id = None;
+    let mut late_child = child.clone();
+    late_child.workspace_id = "ws_late".into();
+    late_child.number = 4;
+    late_child.label = "late-task".into();
+    projected.workspaces.extend([child, other, late_child]);
+    projected
+}
+
+fn entry_ids(snapshot: &ClientShellSnapshot, collapsed: &[&str]) -> Vec<(String, bool, bool)> {
+    let collapsed = collapsed.iter().map(|key| (*key).to_owned()).collect();
+    render::workspace_entries(snapshot, &collapsed)
+        .into_iter()
+        .map(|entry| {
+            (
+                snapshot.workspaces[entry.index].workspace_id.clone(),
+                entry.indented,
+                entry.last_child,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn explicit_children_render_under_parent_in_workspace_order() {
+    let projected = explicit_tree_snapshot();
+    let row = |id: &str, indented, last| (id.to_owned(), indented, last);
+    assert_eq!(
+        entry_ids(&projected, &[]),
+        [
+            row("ws_1", false, false),
+            row("ws_child", true, false),
+            row("ws_late", true, true),
+            row("ws_other", false, false),
+        ]
+    );
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("tree frame");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let line_with = |label: &str| {
+        text.lines()
+            .find(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("missing row {label}"))
+            .to_owned()
+    };
+    assert!(line_with("child-task").contains("├─"));
+    assert!(line_with("late-task").contains("└─"));
+    assert!(state.hits.workspaces[0].group_toggle.is_some());
+}
+
+#[test]
+fn collapsed_explicit_group_keeps_only_focused_child_visible() {
+    let mut projected = explicit_tree_snapshot();
+    let key = "workspace-parent:ws_1";
+    let row = |id: &str, indented, last| (id.to_owned(), indented, last);
+    assert_eq!(
+        entry_ids(&projected, &[key]),
+        [row("ws_1", false, false), row("ws_other", false, false)]
+    );
+    projected.workspaces[0].focused = false;
+    projected.workspaces[3].focused = true;
+    assert_eq!(
+        entry_ids(&projected, &[key]),
+        [
+            row("ws_1", false, false),
+            row("ws_late", true, true),
+            row("ws_other", false, false)
+        ]
+    );
+}
+
+#[test]
+fn closed_parent_does_not_leave_collapse_key_for_a_reused_id() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(explicit_tree_snapshot()));
+    let endpoint = state.active_endpoint_id.clone();
+    state.toggle_collapsed_group(&endpoint, "workspace-parent:ws_1".into());
+    state.toggle_collapsed_group(&endpoint, "repo-key".into());
+
+    let mut replacement = explicit_tree_snapshot();
+    replacement.revision += 1;
+    replacement.workspaces.remove(0);
+    state.set_snapshot(Box::new(replacement));
+
+    assert!(!state.group_is_collapsed(&endpoint, "workspace-parent:ws_1"));
+    assert!(state.group_is_collapsed(&endpoint, "repo-key"));
+}
+
+#[test]
+fn worktree_root_shows_linked_children_before_explicit_children() {
+    let mut projected = explicit_tree_snapshot();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut linked = projected.workspaces[2].clone();
+    linked.workspace_id = "ws_linked".into();
+    linked.number = 5;
+    linked.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    projected.workspaces.push(linked);
+    let row = |id: &str, indented, last| (id.to_owned(), indented, last);
+    assert_eq!(
+        entry_ids(&projected, &[]),
+        [
+            row("ws_1", false, false),
+            row("ws_linked", true, false),
+            row("ws_child", true, false),
+            row("ws_late", true, true),
+            row("ws_other", false, false),
+        ]
+    );
+    assert_eq!(
+        entry_ids(&projected, &["repo"]),
+        [row("ws_1", false, false), row("ws_other", false, false)]
+    );
+}
+
+#[test]
+fn workspace_drag_moves_explicit_parent_as_one_block_and_rejects_child() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(explicit_tree_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("tree frame");
+    let parent = state.hits.workspaces[0].rect;
+    let child = state.hits.workspaces[1].rect;
+    let other = state.hits.workspaces[3].rect;
+    let mouse = |kind, rect: Rect, row| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column: rect.x + 2,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        parent,
+        parent.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        other,
+        other.bottom(),
+    )]);
+    let moved = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        other,
+        other.bottom(),
+    )]);
+    assert!(matches!(
+        &moved.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMoveBlock(params)
+                    if params.workspace_ids == ["ws_1", "ws_child", "ws_late"]
+                        && params.before_workspace_id.is_none()
+            )
+    ));
+
+    state.compose(106, 24).expect("tree frame");
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        child,
+        child.y,
+    )]);
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        other,
+        other.bottom(),
+    )]);
+    let rejected = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        other,
+        other.bottom(),
+    )]);
+    assert!(!rejected.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(
+                request.method,
+                crate::api::schema::Method::WorkspaceMoveBlock(_)
+                    | crate::api::schema::Method::WorkspaceMove(_)
+            )
+    )));
+}
+
+#[test]
+fn workspace_drag_leaves_foreign_child_with_the_same_worktree_key() {
+    let mut projected = explicit_tree_snapshot();
+    let worktree = ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    };
+    projected.workspaces[2].worktree = Some(worktree.clone());
+    projected.workspaces[1].worktree = Some(worktree);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    let method = state.workspace_move_method("ws_other", Some("ws_1"));
+    assert!(
+        matches!(
+            &method,
+            Some(crate::api::schema::Method::WorkspaceMoveBlock(params))
+                if params.workspace_ids == ["ws_other"]
+        ),
+        "{method:?}"
+    );
+}
+
+#[test]
+fn move_workspace_key_moves_the_group() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(explicit_tree_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("tree frame");
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::MoveWorkspaceDown),
+        &mut outcome,
+    );
+    assert!(matches!(
+        &outcome.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMoveBlock(params)
+                    if params.workspace_ids == ["ws_1", "ws_child", "ws_late"]
+                        && params.before_workspace_id.is_none()
+            )
+    ));
 }
 
 #[test]

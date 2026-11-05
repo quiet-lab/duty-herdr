@@ -356,6 +356,8 @@ pub struct Keybinds {
     pub new_workspace: ActionKeybinds,
     pub new_worktree: ActionKeybinds,
     pub open_worktree: ActionKeybinds,
+    pub move_workspace_up: ActionKeybinds,
+    pub move_workspace_down: ActionKeybinds,
     pub remove_worktree: ActionKeybinds,
     pub rename_workspace: ActionKeybinds,
     pub close_workspace: ActionKeybinds,
@@ -539,6 +541,8 @@ impl Config {
             new_workspace: empty_action!(),
             new_worktree: empty_action!(),
             open_worktree: empty_action!(),
+            move_workspace_up: empty_action!(),
+            move_workspace_down: empty_action!(),
             remove_worktree: empty_action!(),
             rename_workspace: empty_action!(),
             close_workspace: empty_action!(),
@@ -668,6 +672,8 @@ impl Config {
             apply_action!(keybinds.new_workspace, new_workspace, source);
             apply_action!(keybinds.new_worktree, new_worktree, source);
             apply_action!(keybinds.open_worktree, open_worktree, source);
+            apply_action!(keybinds.move_workspace_up, move_workspace_up, source);
+            apply_action!(keybinds.move_workspace_down, move_workspace_down, source);
             apply_action!(keybinds.remove_worktree, remove_worktree, source);
             apply_action!(keybinds.rename_workspace, rename_workspace, source);
             apply_action!(keybinds.close_workspace, close_workspace, source);
@@ -1691,6 +1697,8 @@ next_tab = "prefix+n"
     fn open_and_remove_worktree_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.open_worktree.bindings.is_empty());
+        assert!(kb.move_workspace_up.bindings.is_empty());
+        assert!(kb.move_workspace_down.bindings.is_empty());
         assert!(kb.remove_worktree.bindings.is_empty());
     }
 

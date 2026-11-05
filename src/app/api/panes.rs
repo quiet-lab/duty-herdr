@@ -983,6 +983,9 @@ impl App {
                 .custom_name
                 .clone(),
             previous_worktree_space: self.state.workspaces[source_ws_idx].worktree_space.clone(),
+            previous_parent_workspace_id: self.state.workspaces[source_ws_idx]
+                .parent_workspace_id
+                .clone(),
             identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
         };
 
@@ -1391,6 +1394,7 @@ impl App {
             );
             workspace.id = context.previous_workspace_id;
             workspace.worktree_space = context.previous_worktree_space;
+            workspace.parent_workspace_id = context.previous_parent_workspace_id;
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
             if let Some(active) = self.state.active {
                 if active >= insert_idx {
@@ -2244,6 +2248,7 @@ struct PaneMoveRecoveryContext {
     previous_workspace_label: Option<String>,
     previous_tab_label: Option<String>,
     previous_worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
+    previous_parent_workspace_id: Option<String>,
     identity_cwd: std::path::PathBuf,
 }
 
@@ -3832,6 +3837,7 @@ mod tests {
             previous_workspace_label: app.state.workspaces[0].custom_name.clone(),
             previous_tab_label: app.state.workspaces[0].tabs[0].custom_name.clone(),
             previous_worktree_space: app.state.workspaces[0].worktree_space.clone(),
+            previous_parent_workspace_id: None,
             identity_cwd: app.state.workspaces[0].identity_cwd.clone(),
         };
         let taken = app.state.workspaces[0]

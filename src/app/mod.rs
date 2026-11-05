@@ -499,6 +499,7 @@ impl App {
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
+            released_workspace_ids: Vec::new(),
             workspaces,
             active,
             previous_pane_focus: None,

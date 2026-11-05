@@ -25,6 +25,8 @@ impl ClientShellState {
                         action,
                         crate::input::KeybindAction::RenameWorkspace
                             | crate::input::KeybindAction::CloseWorkspace
+                            | crate::input::KeybindAction::MoveWorkspaceUp
+                            | crate::input::KeybindAction::MoveWorkspaceDown
                     )
                 {
                     self.receive_endpoint_unavailable(
@@ -928,6 +930,18 @@ impl ClientShellState {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }
                 Some(Method::PaneFocus(PaneTarget { pane_id }))
+            }
+            KeybindAction::MoveWorkspaceUp | KeybindAction::MoveWorkspaceDown => {
+                let placement = if action == KeybindAction::MoveWorkspaceUp {
+                    crate::workspace_tree::WorkspaceMovePlacement::Up
+                } else {
+                    crate::workspace_tree::WorkspaceMovePlacement::Down
+                };
+                let workspace_id = self.workspace_action_id()?;
+                let nodes = sidebar::workspace_tree_nodes(snapshot);
+                crate::workspace_tree::plan_workspace_move(&nodes, &workspace_id, &placement)
+                    .ok()
+                    .flatten()
             }
             KeybindAction::SwitchWorkspace(index) => {
                 let entries = self.navigation_workspace_entries(snapshot);

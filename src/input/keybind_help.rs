@@ -139,6 +139,14 @@ pub(crate) fn keybind_help_groups(
                 ),
                 entry(binding_label(&keybinds.close_workspace), "close workspace"),
                 entry(
+                    binding_label(&keybinds.move_workspace_up),
+                    "move workspace up",
+                ),
+                entry(
+                    binding_label(&keybinds.move_workspace_down),
+                    "move workspace down",
+                ),
+                entry(
                     binding_label(&keybinds.previous_workspace),
                     "previous workspace",
                 ),

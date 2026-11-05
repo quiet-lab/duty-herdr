@@ -23,6 +23,9 @@
   из пакета pacman распознаётся, `herdr update` печатает подсказку
   обновить пакет.
 - Установка: `distribution/install.sh` ставит выпуск форка.
+- Дерево workspace: явная связь «родитель → дочерний» как факт сервера,
+  показ дочерних под родителем в панели Spaces, перемещение блоком
+  из CLI и клавишами.
 - Выпускается только `linux-x86_64`; канал `preview` не публикуется.
 
 ## Настройка
@@ -104,6 +107,62 @@ rows = [["state_icon", "machine", "tab"], ["focused_tab"], ["agent"]]
 отправка ждёт эха, ввод пользователя в панель (в том числе Ctrl-C)
 проходит сразу; экран проверяется только по изменению содержимого и только
 по нижним 12 строкам.
+
+## Дерево workspace
+
+Workspace хранит необязательное поле `parent_workspace_id`: оно отдаётся
+в `WorkspaceInfo`, снимке клиента и событиях `workspace.created`,
+`workspace.updated`, сохраняется в снимке сессии. Вложенность одна.
+
+```sh
+herdr workspace create --parent <ws> [--cwd <путь>] [--label <имя>]
+herdr workspace set-parent <ws> --parent <родитель>
+herdr workspace set-parent <ws> --clear
+herdr workspace move <ws> --before <цель>
+herdr workspace move <ws> --after <цель>
+herdr workspace move <ws> --index <N>
+```
+
+`create --parent` вызывает метод `workspace.create_child`: это параметры
+`workspace.create` и обязательный `parent_workspace_id`. Метод
+`workspace.create` замороженного контракта клиента не меняется, старый сервер
+отвечает ошибкой о неизвестном методе, а не игнорирует родителя. Снятие связи
+в API — `workspace.set_parent` с `parent_workspace_id: null`.
+
+Коды отказа `workspace.set_parent` и `workspace.create_child`:
+
+| Код | Причина |
+|---|---|
+| `workspace_not_found` | workspace или родитель не существует |
+| `workspace_parent_self` | ссылка на себя |
+| `workspace_parent_nested` | у родителя есть свой родитель, у дочернего есть свои дочерние (в том числе цикл) |
+| `workspace_parent_worktree_child` | дочерний или родитель — linked-дочерний worktree-группы |
+| `workspace_parent_worktree_group` | дочерний — корень worktree-группы |
+
+Закрытие родителя не закрывает дочерние и не требует `--group`: они становятся
+корневыми, о каждом приходит `workspace.updated`. Связь снимается так же, когда
+дочерний становится корнем worktree-группы, и при восстановлении сессии, если
+родителя нет.
+
+Панель показывает дочерних сразу под родителем с отступом, в порядке
+`state.workspaces`. У корня worktree-группы сначала идут linked-дочерние, затем
+явные. Группа сворачивается как worktree-группа, свёрнутая показывает только
+дочерний в фокусе. Перетаскивание мышью переносит родителя блоком, дочерний
+не перетаскивается.
+
+`workspace move` и клавиши работают на уровне записи: корень идёт вместе со
+своей группой среди корней, дочерний — среди дочерних того же родителя. Цель
+`--before` и `--after` — запись того же уровня; `--index` считается с нуля среди
+записей уровня. Запись уже на месте — порядок не меняется, команда печатает
+текущий список.
+
+Действия клавиш без привязки по умолчанию, раздел `[keys]`:
+
+```toml
+[keys]
+move_workspace_up = "prefix+alt+up"
+move_workspace_down = "prefix+alt+down"
+```
 
 ## Установка и обновление
 

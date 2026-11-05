@@ -459,36 +459,51 @@ pub(crate) fn render_sidebar(
     );
 }
 
+pub(crate) fn workspace_tree_nodes(
+    snapshot: &ClientShellSnapshot,
+) -> Vec<crate::workspace_tree::WorkspaceNode<'_>> {
+    snapshot
+        .workspaces
+        .iter()
+        .map(|workspace| crate::workspace_tree::WorkspaceNode {
+            id: &workspace.workspace_id,
+            worktree_key: workspace
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.key.as_str()),
+            is_linked_worktree: workspace
+                .worktree
+                .as_ref()
+                .is_some_and(|worktree| worktree.is_linked_worktree),
+            parent_id: workspace.parent_workspace_id.as_deref(),
+        })
+        .collect()
+}
+
 pub(crate) fn workspace_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<WorkspaceEntry> {
+    let nodes = workspace_tree_nodes(snapshot);
+    let grouped = crate::workspace_tree::grouped_worktree_keys(&nodes);
+    let explicit = crate::workspace_tree::explicit_children(&nodes);
+    let explicit_child = explicit
+        .values()
+        .flatten()
+        .copied()
+        .collect::<HashSet<usize>>();
     let mut members = HashMap::<&str, Vec<usize>>::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
         if let Some(worktree) = &workspace.worktree {
             members.entry(&worktree.key).or_default().push(index);
         }
     }
-    let grouped = members
-        .iter()
-        .filter(|(_, indices)| {
-            indices.iter().any(|index| {
-                snapshot.workspaces[*index]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            }) && indices.iter().any(|index| {
-                snapshot.workspaces[*index]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| !worktree.is_linked_worktree)
-            })
-        })
-        .map(|(key, _)| *key)
-        .collect::<HashSet<_>>();
     let mut emitted = HashSet::<&str>::new();
     let mut entries = Vec::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if explicit_child.contains(&index) {
+            continue;
+        }
         let Some(worktree) = workspace
             .worktree
             .as_ref()
@@ -499,6 +514,11 @@ pub(crate) fn workspace_entries(
                 indented: false,
                 last_child: false,
             });
+            if let Some(children) = explicit.get(&index) {
+                let collapsed =
+                    collapsed_groups.contains(&explicit_group_key(&workspace.workspace_id));
+                push_child_entries(snapshot, children.clone(), collapsed, &mut entries);
+            }
             continue;
         };
         if !emitted.insert(&worktree.key) {
@@ -507,71 +527,124 @@ pub(crate) fn workspace_entries(
         let Some(group_members) = members.get(worktree.key.as_str()) else {
             continue;
         };
-        for parent in group_members.iter().copied().filter(|member| {
-            snapshot.workspaces[*member]
+        let is_linked = |member: usize| {
+            snapshot.workspaces[member]
                 .worktree
                 .as_ref()
-                .is_some_and(|worktree| !worktree.is_linked_worktree)
-        }) {
+                .is_some_and(|worktree| worktree.is_linked_worktree)
+        };
+        let roots = group_members
+            .iter()
+            .copied()
+            .filter(|member| !is_linked(*member))
+            .collect::<Vec<_>>();
+        for parent in &roots {
             entries.push(WorkspaceEntry {
-                index: parent,
+                index: *parent,
                 indented: false,
                 last_child: false,
             });
         }
-        if collapsed_groups.contains(&worktree.key) {
-            if let Some(active) = group_members.iter().copied().find(|member| {
-                let workspace = &snapshot.workspaces[*member];
-                workspace.focused
-                    && workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
-            }) {
-                entries.push(WorkspaceEntry {
-                    index: active,
-                    indented: true,
-                    last_child: true,
-                });
-            }
-            continue;
-        }
         let children = group_members
             .iter()
             .copied()
-            .filter(|member| {
-                snapshot.workspaces[*member]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            })
+            .filter(|member| is_linked(*member))
+            .chain(
+                roots
+                    .iter()
+                    .filter_map(|root| explicit.get(root))
+                    .flatten()
+                    .copied(),
+            )
             .collect::<Vec<_>>();
-        for (child_index, child) in children.iter().enumerate() {
-            entries.push(WorkspaceEntry {
-                index: *child,
-                indented: true,
-                last_child: child_index + 1 == children.len(),
-            });
-        }
+        push_child_entries(
+            snapshot,
+            children,
+            collapsed_groups.contains(&worktree.key),
+            &mut entries,
+        );
     }
     entries
 }
 
-fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
-    let workspace = snapshot.workspaces.get(index)?;
-    let worktree = workspace.worktree.as_ref()?;
-    if worktree.is_linked_worktree {
-        return None;
+/// A collapsed group shows only its focused child, so focus stays visible.
+fn push_child_entries(
+    snapshot: &ClientShellSnapshot,
+    mut children: Vec<usize>,
+    collapsed: bool,
+    entries: &mut Vec<WorkspaceEntry>,
+) {
+    if collapsed {
+        children.retain(|child| snapshot.workspaces[*child].focused);
+        children.truncate(1);
     }
-    snapshot
-        .workspaces
-        .iter()
-        .any(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|candidate| {
-                candidate.key == worktree.key && candidate.is_linked_worktree
+    let count = children.len();
+    for (position, child) in children.into_iter().enumerate() {
+        entries.push(WorkspaceEntry {
+            index: child,
+            indented: true,
+            last_child: position + 1 == count,
+        });
+    }
+}
+
+const EXPLICIT_GROUP_PREFIX: &str = "workspace-parent:";
+
+/// Collapse key of a parent whose only children are explicit ones.
+pub(in crate::client::shell) fn explicit_group_key(workspace_id: &str) -> String {
+    format!("{EXPLICIT_GROUP_PREFIX}{workspace_id}")
+}
+
+/// Workspace ids can return after a restart, so a closed parent must not leave
+/// its collapse key behind for a new workspace to inherit.
+pub(in crate::client::shell) fn prune_explicit_group_keys(
+    groups: &mut HashSet<String>,
+    snapshot: &ClientShellSnapshot,
+) {
+    groups.retain(|key| {
+        key.strip_prefix(EXPLICIT_GROUP_PREFIX).is_none_or(|id| {
+            snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == id)
+        })
+    });
+}
+
+pub(in crate::client::shell) fn has_explicit_children(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+) -> bool {
+    snapshot.workspaces.iter().any(|candidate| {
+        candidate.parent_workspace_id.as_deref() == Some(workspace.workspace_id.as_str())
+    }) && workspace.parent_workspace_id.is_none()
+        && !workspace
+            .worktree
+            .as_ref()
+            .is_some_and(|worktree| worktree.is_linked_worktree)
+}
+
+pub(in crate::client::shell) fn parent_group_key(
+    snapshot: &ClientShellSnapshot,
+    index: usize,
+) -> Option<String> {
+    let workspace = snapshot.workspaces.get(index)?;
+    let worktree_key = workspace
+        .worktree
+        .as_ref()
+        .filter(|worktree| !worktree.is_linked_worktree)
+        .filter(|worktree| {
+            snapshot.workspaces.iter().any(|candidate| {
+                candidate.worktree.as_ref().is_some_and(|candidate| {
+                    candidate.key == worktree.key && candidate.is_linked_worktree
+                })
             })
         })
-        .then(|| worktree.key.clone())
+        .map(|worktree| worktree.key.clone());
+    worktree_key.or_else(|| {
+        has_explicit_children(snapshot, workspace)
+            .then(|| explicit_group_key(&workspace.workspace_id))
+    })
 }
 
 pub(in crate::client::shell) fn workspace_close_is_group(
@@ -639,25 +712,33 @@ pub(in crate::client::shell) fn displayed_workspace_status(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
 ) -> crate::api::schema::AgentStatus {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
+    if collapsed_groups.is_empty() {
+        return workspace.agent_status;
+    }
+    let Some(key) = snapshot
+        .workspaces
+        .iter()
+        .position(|candidate| candidate.workspace_id == workspace.workspace_id)
+        .and_then(|index| parent_group_key(snapshot, index))
     else {
         return workspace.agent_status;
     };
-    if !collapsed_groups.contains(&worktree.key) {
+    if !collapsed_groups.contains(&key) {
         return workspace.agent_status;
     }
+    let group_key = workspace
+        .worktree
+        .as_ref()
+        .map(|worktree| worktree.key.as_str());
     snapshot
         .workspaces
         .iter()
         .filter(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|member| {
-                member.key == worktree.key
-                    && (member.is_linked_worktree
-                        || candidate.workspace_id == workspace.workspace_id)
-            })
+            candidate.workspace_id == workspace.workspace_id
+                || candidate.parent_workspace_id.as_deref() == Some(workspace.workspace_id.as_str())
+                || candidate.worktree.as_ref().is_some_and(|member| {
+                    member.is_linked_worktree && Some(member.key.as_str()) == group_key
+                })
         })
         .map(|candidate| candidate.agent_status)
         .max_by_key(|status| status_priority(*status))

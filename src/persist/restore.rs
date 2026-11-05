@@ -309,6 +309,8 @@ fn restore_with_imports_and_failures(
         }
     }
     crate::workspace::reserve_workspace_ids(&workspaces);
+    // A saved parent may be gone: it failed to restore or the snapshot is older.
+    crate::workspace::clear_invalid_parent_links(&mut workspaces);
     ((workspaces, terminals, terminal_runtimes), failed_imports)
 }
 
@@ -425,6 +427,7 @@ fn restore_workspace(
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: snap.worktree_space.clone(),
+            parent_workspace_id: snap.parent_workspace_id.clone(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -1523,6 +1526,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_keeps_valid_parent_link_and_drops_link_to_missing_workspace() {
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        let parent_id = snapshot.workspaces[1].id.clone().unwrap();
+        snapshot.workspaces[0].parent_workspace_id = Some(parent_id.clone());
+        let mut orphan = serde_json::from_value::<WorkspaceSnapshot>(
+            serde_json::to_value(&snapshot.workspaces[1]).unwrap(),
+        )
+        .unwrap();
+        orphan.id = Some("w-orphan".into());
+        orphan.parent_workspace_id = Some("w-gone".into());
+        snapshot.workspaces.push(orphan);
+
+        let (events, _rx) = mpsc::channel(32);
+        let (workspaces, _, _) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert_eq!(workspaces.len(), 3);
+        assert_eq!(
+            workspaces[0].parent_workspace_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(workspaces[1].parent_workspace_id, None);
+        assert_eq!(workspaces[2].parent_workspace_id, None);
+    }
+
+    #[tokio::test]
     async fn restore_carries_persisted_agent_session_metadata() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1532,6 +1584,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                parent_workspace_id: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1613,6 +1666,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                parent_workspace_id: None,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 public_tab_numbers: vec![5],
@@ -1726,6 +1780,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                parent_workspace_id: None,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
                 public_tab_numbers: vec![1, 3, 4, 5],
@@ -1809,6 +1864,7 @@ mod tests {
             custom_name: None,
             identity_cwd: cwd,
             worktree_space: None,
+            parent_workspace_id: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -1848,6 +1904,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd.clone(),
                 worktree_space: None,
+                parent_workspace_id: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -2204,6 +2261,7 @@ mod tests {
                 custom_name: None,
                 identity_cwd: cwd,
                 worktree_space: None,
+                parent_workspace_id: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

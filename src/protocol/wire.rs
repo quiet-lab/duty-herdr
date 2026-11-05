@@ -1032,6 +1032,10 @@ pub struct ClientShellWorkspace {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// Optional in `shell.snapshot.v1`: older servers omit it, older clients ignore it.
+    /// Not skipped when empty because the binary snapshot variant cannot omit fields.
+    #[serde(default)]
+    pub parent_workspace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2830,6 +2834,7 @@ mod tests {
                 worktree: None,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                parent_workspace_id: None,
             }],
             tabs: vec![ClientShellTab {
                 tab_id: "w1:t1".into(),

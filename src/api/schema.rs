@@ -65,6 +65,8 @@ operations::define_operations! {
     WorkspaceRename(WorkspaceRenameParams) => "workspace.rename", true, true;
     WorkspaceMove(WorkspaceMoveParams) => "workspace.move", true, true;
     WorkspaceMoveBlock(WorkspaceMoveBlockParams) => "workspace.move_block", true, true;
+    WorkspaceCreateChild(WorkspaceCreateChildParams) => "workspace.create_child", true, true;
+    WorkspaceSetParent(WorkspaceSetParentParams) => "workspace.set_parent", true, true;
     WorkspaceReportMetadata(WorkspaceReportMetadataParams) => "workspace.report_metadata", true, false;
     WorkspaceClose(WorkspaceCloseParams) => "workspace.close", true, true;
     WorktreeList(WorktreeListParams) => "worktree.list", false, true;

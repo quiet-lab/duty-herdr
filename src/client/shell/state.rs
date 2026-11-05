@@ -535,6 +535,7 @@ pub(super) enum ClientContextMenuTarget {
         is_git: bool,
         is_linked_worktree: bool,
         has_worktree_children: bool,
+        has_explicit_children: bool,
         close_group: bool,
         collapsed: bool,
     },
