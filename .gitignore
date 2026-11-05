@@ -28,3 +28,4 @@ __pycache__/
 
 /.wrangler/
 **/.wrangler/
+.duty/local.toml
