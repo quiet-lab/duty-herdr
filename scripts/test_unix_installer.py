@@ -37,8 +37,8 @@ class UnixInstallerTests(unittest.TestCase):
             "uname",
             """#!/bin/sh
 case "$1" in
-  -s) echo Linux ;;
-  -m) echo x86_64 ;;
+  -s) echo "${FAKE_UNAME_S:-Linux}" ;;
+  -m) echo "${FAKE_UNAME_M:-x86_64}" ;;
   -o)
     [ "${FAKE_UNAME_OS_UNAVAILABLE:-}" != "1" ] || exit 1
     echo "${FAKE_UNAME_OS:-GNU/Linux}"
@@ -51,6 +51,7 @@ esac
             "curl",
             """#!/bin/sh
 : > "$FAKE_CURL_MARKER"
+printf '%s\n' "$*" >> "$FAKE_CURL_MARKER.log"
 out=""
 previous=""
 for argument in "$@"; do
@@ -202,6 +203,33 @@ exec {sha256sum} "$@"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("valid SHA-256 checksum", result.stderr)
         self.assertEqual(installed.read_bytes(), b"existing-herdr\n")
+
+    def test_fork_manifest_is_fetched_from_fork_releases(self) -> None:
+        result = self._run_installer(self.expected_sha256)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = (self.root / "curl-called.log").read_text(encoding="utf-8")
+        self.assertIn(
+            "https://github.com/quiet-lab/duty-herdr/releases/latest/download/latest.json",
+            calls,
+        )
+        self.assertNotIn("herdr.dev", calls)
+
+    def test_non_linux_x86_64_platforms_are_rejected_before_download(self) -> None:
+        for uname_s, uname_m in (("Darwin", "arm64"), ("Linux", "aarch64")):
+            with self.subTest(os=uname_s, arch=uname_m):
+                (self.root / "curl-called").unlink(missing_ok=True)
+                (self.bin_dir / "sha256sum").unlink(missing_ok=True)
+
+                result = self._run_installer(
+                    self.expected_sha256,
+                    extra_env={"FAKE_UNAME_S": uname_s, "FAKE_UNAME_M": uname_m},
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Linux x86_64 binaries only", result.stderr)
+                self.assertFalse((self.root / "curl-called").exists())
+                self.assertFalse((self.install_dir / "herdr").exists())
 
 
 if __name__ == "__main__":

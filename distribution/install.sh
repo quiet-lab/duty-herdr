@@ -2,14 +2,16 @@
 set -eu
 
 BIN="herdr"
-MANIFEST_URL="https://herdr.dev/latest.json"
+# duty-herdr fork: the manifest and binaries are assets of the fork's GitHub Releases.
+RELEASES_URL="https://github.com/quiet-lab/duty-herdr/releases"
+MANIFEST_URL="${RELEASES_URL}/latest/download/latest.json"
 INSTALL_DIR="${HERDR_INSTALL_DIR:-$HOME/.local/bin}"
 
 main() {
     echo ""
     echo "      ,ww"
-    echo "     wWWWWWWW_)  herdr installer"
-    echo "     \`WWWWWW'    herdr.dev"
+    echo "     wWWWWWWW_)  duty-herdr installer"
+    echo "     \`WWWWWW'    github.com/quiet-lab/duty-herdr"
     echo "      II  II"
     echo ""
 
@@ -17,8 +19,7 @@ main() {
     OS="$(uname -s)"
     case "$OS" in
         Linux)  os="linux" ;;
-        Darwin) os="macos" ;;
-        *)      err "unsupported OS: $OS" ;;
+        *)      err "unsupported OS: $OS; duty-herdr publishes Linux x86_64 binaries only" ;;
     esac
 
     if [ "$OS" = "Linux" ] && [ "$(uname -o 2>/dev/null || true)" = "Android" ]; then
@@ -28,8 +29,7 @@ main() {
     ARCH="$(uname -m)"
     case "$ARCH" in
         x86_64|amd64)   arch="x86_64" ;;
-        aarch64|arm64)  arch="aarch64" ;;
-        *)              err "unsupported architecture: $ARCH" ;;
+        *)              err "unsupported architecture: $ARCH; duty-herdr publishes Linux x86_64 binaries only" ;;
     esac
 
     log "detected ${os}/${arch}"
@@ -43,7 +43,7 @@ main() {
     TARGET="${os}-${arch}"
     log "fetching latest release manifest..."
     MANIFEST="$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 20 "$MANIFEST_URL")" \
-        || err "can't reach ${MANIFEST_URL}. Please try again later; herdr.dev might be down. Who let the sheeps out? baaa."
+        || err "can't reach ${MANIFEST_URL}. Please try again later or check ${RELEASES_URL}."
     URL="$(printf '%s\n' "$MANIFEST" | awk -v target="\"${TARGET}\"" '
         /^[[:space:]]*"assets"[[:space:]]*:/ { in_assets = 1; next }
         in_assets && /^[[:space:]]*}/ { exit }
@@ -143,7 +143,7 @@ err()  { printf '  \033[31m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
 need() {
     if ! command -v "$1" >/dev/null 2>&1; then
-        err "requires '$1' — install it first, or download a binary manually from https://herdr.dev/docs/install/"
+        err "requires '$1' — install it first, or download a binary manually from ${RELEASES_URL}"
     fi
 }
 
