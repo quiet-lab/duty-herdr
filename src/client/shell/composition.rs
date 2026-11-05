@@ -20,11 +20,13 @@ fn restore_mode_bar(
 }
 
 impl ClientShellState {
-    /// Fixes the status icon frame of a composition from the rows of every endpoint.
+    /// Fixes the status icon frame of a composition from the rows of the active snapshot
+    /// and of every endpoint that is not collapsed.
     fn begin_status_frames(&mut self, now: std::time::Instant) {
         let snapshots = self.snapshot.as_deref().into_iter().chain(
             self.endpoints
                 .iter()
+                .filter(|endpoint| !self.collapsed_endpoints.contains(&endpoint.endpoint_id))
                 .filter_map(|endpoint| endpoint.snapshot.as_deref()),
         );
         self.config.status_icons.begin_composition(

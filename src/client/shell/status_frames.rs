@@ -28,39 +28,34 @@ pub(super) fn frame_index(tick: u64, frames: usize) -> usize {
     }
 }
 
-const ALL_STATUSES: [AgentStatus; 5] = [
-    AgentStatus::Idle,
-    AgentStatus::Working,
-    AgentStatus::Blocked,
-    AgentStatus::Done,
-    AgentStatus::Unknown,
-];
-
 /// `[ui.status_icons]` together with the frame of the composition being drawn.
 #[derive(Debug)]
 pub(crate) struct ShellStatusIcons {
     configured: StatusIcons,
     epoch: Instant,
     tick: u64,
-    /// Whether the current view has a row in a state with an animated icon.
-    animated_visible: bool,
+    has_animation: bool,
+    /// Whether a shown endpoint has a row in a state with an animated icon.
+    animated_row_present: bool,
 }
 
 impl ShellStatusIcons {
     pub(super) fn new(configured: StatusIcons) -> Self {
         Self {
+            has_animation: has_animation(&configured),
             configured,
             epoch: Instant::now(),
             tick: 0,
-            animated_visible: false,
+            animated_row_present: false,
         }
     }
 
     /// Replaces the configuration, keeping the epoch so that a reload does not
     /// restart the animation.
     pub(super) fn set_configured(&mut self, configured: StatusIcons) {
+        self.has_animation = has_animation(&configured);
         self.configured = configured;
-        self.animated_visible = false;
+        self.animated_row_present = false;
     }
 
     #[cfg(test)]
@@ -81,27 +76,21 @@ impl ShellStatusIcons {
         frame_tick(now.saturating_duration_since(self.epoch), self.interval())
     }
 
-    /// Fixes the frame for one composition and records whether a row of the view is
-    /// in an animated state. The statuses are the rows' data, so nothing depends on
-    /// how a frame is laid out in cells. A row that shows no icon, for lack of a token
-    /// or of width, costs a repaint without a visible change; a missed row would stop
-    /// the animation. Without animated icons in the configuration no row is read.
+    /// Fixes the frame for one composition and records whether a row is in an animated
+    /// state. The statuses are the rows' data, so nothing depends on how a frame is laid
+    /// out in cells. A row that shows no icon, for lack of a token, of width or of space
+    /// on screen, costs a repaint without a visible change; a missed row would stop the
+    /// animation. Without animated icons in the configuration no row is read.
     pub(super) fn begin_composition(
         &mut self,
         now: Instant,
         mut statuses: impl Iterator<Item = AgentStatus>,
     ) {
         self.tick = self.tick_at(now);
-        let animated = ALL_STATUSES.map(|status| {
-            self.frames_for(status)
-                .is_some_and(StatusIconFrames::is_animated)
-        });
-        self.animated_visible = animated.contains(&true)
+        self.animated_row_present = self.has_animation
             && statuses.any(|status| {
-                ALL_STATUSES
-                    .iter()
-                    .zip(animated)
-                    .any(|(candidate, animated)| animated && *candidate == status)
+                self.frames_for(status)
+                    .is_some_and(StatusIconFrames::is_animated)
             });
     }
 
@@ -109,10 +98,10 @@ impl ShellStatusIcons {
     /// timers. Reason: frames change with time and no event source exists for them.
     /// Removal condition: animated status icons are dropped from the fork.
     ///
-    /// The moment the shown frame goes stale, while an animated icon is visible.
+    /// The moment the shown frame goes stale, while a row is in an animated state.
     /// `None` keeps the client loop's wake-ups as they are without animation.
     pub(super) fn next_frame_at(&self, now: Instant) -> Option<Instant> {
-        if !self.animated_visible {
+        if !self.animated_row_present {
             return None;
         }
         let next = u32::try_from(self.tick_at(now).saturating_add(1)).ok()?;
@@ -121,7 +110,7 @@ impl ShellStatusIcons {
 
     /// Whether `now` belongs to another frame than the last composition drew.
     pub(super) fn frame_stale(&self, now: Instant) -> bool {
-        self.animated_visible && self.tick_at(now) != self.tick
+        self.animated_row_present && self.tick_at(now) != self.tick
     }
 
     pub(super) fn override_for(&self, status: AgentStatus) -> Option<&str> {
@@ -141,6 +130,19 @@ impl ShellStatusIcons {
             AgentStatus::Unknown => self.configured.unknown.as_ref(),
         }
     }
+}
+
+fn has_animation(icons: &StatusIcons) -> bool {
+    [
+        &icons.idle,
+        &icons.working,
+        &icons.blocked,
+        &icons.done,
+        &icons.unknown,
+    ]
+    .into_iter()
+    .flatten()
+    .any(StatusIconFrames::is_animated)
 }
 
 #[cfg(test)]
@@ -257,10 +259,10 @@ mod tests {
         let mut icons = animated_icons();
         let start = icons.epoch;
         icons.begin_composition(start, [AgentStatus::Working].into_iter());
-        assert!(icons.animated_visible);
+        assert!(icons.animated_row_present);
         icons.set_configured(StatusIcons::default());
         assert_eq!(icons.epoch, start);
-        assert!(!icons.animated_visible);
+        assert!(!icons.animated_row_present);
         assert_eq!(icons.override_for(AgentStatus::Working), None);
     }
 }

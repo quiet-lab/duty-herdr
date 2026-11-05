@@ -201,7 +201,7 @@ fn frame_changes_on_the_period_boundary_and_not_inside_it() {
 }
 
 #[test]
-fn visible_animated_icon_arms_the_timer_and_repaint() {
+fn row_in_animated_state_arms_the_timer_and_repaint() {
     let mut state = moon_state(working_snapshot());
     let epoch = state.config.status_icons.epoch();
     state.compose_at(106, 30, epoch).expect("frame");
@@ -217,7 +217,7 @@ fn visible_animated_icon_arms_the_timer_and_repaint() {
 }
 
 #[test]
-fn no_visible_animated_icon_leaves_the_timer_alone() {
+fn no_row_in_animated_state_leaves_the_timer_alone() {
     let idle_default = Duration::from_millis(100);
 
     // Frames are configured, but no row is in the animated state.
@@ -287,18 +287,50 @@ fn frames_of_two_graphemes_keep_the_animation_going() {
 }
 
 #[test]
-fn unavailable_screen_keeps_the_sidebar_animated() {
+fn missing_surface_holds_the_tick_so_a_resize_keeps_the_retained_screen() {
     let mut state = moon_state(working_snapshot());
-    state.invalidate_pane_surface();
     let epoch = state.config.status_icons.epoch();
-    let first = state.compose_at(106, 30, epoch).expect("unavailable frame");
-    assert!(first.cells.iter().any(|cell| cell.symbol == MOON[0]));
+    state.compose_at(106, 30, epoch).expect("frame");
+    state.invalidate_pane_surface();
+    assert!(!state.tick_status_frame(epoch + INTERVAL, false));
+
+    // The surface's arrival repaints with the current frame.
+    state.set_pane_surface(surface());
+    let frame = state.compose_at(106, 30, epoch + INTERVAL).expect("frame");
+    assert!(frame.cells.iter().any(|cell| cell.symbol == MOON[1]));
+}
+
+/// The timer follows the rows' data, not the cells: a row without a drawn icon costs a
+/// repaint without a visible change.
+#[test]
+fn row_without_a_drawn_icon_still_arms_the_timer() {
+    let mut config = moon_config();
+    config.ui.sidebar.agents.rows = vec![vec![AgentSidebarToken::Agent]];
+    config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(working_snapshot()));
+    state.set_pane_surface(surface());
+    let epoch = state.config.status_icons.epoch();
+    let frame = state.compose_at(106, 30, epoch).expect("frame");
+    assert!(frame
+        .cells
+        .iter()
+        .all(|cell| !MOON.contains(&cell.symbol.as_str())));
     assert!(state.tick_status_frame(epoch + INTERVAL, false));
-    let next = state
-        .compose_at(106, 30, epoch + INTERVAL)
-        .expect("unavailable frame");
-    assert!(next.cells.iter().any(|cell| cell.symbol == MOON[1]));
-    assert!(next.cells.iter().all(|cell| cell.symbol != MOON[0]));
+}
+
+#[test]
+fn collapsed_endpoint_does_not_arm_the_timer() {
+    let mut state = moon_state(snapshot());
+    with_remote(&mut state);
+    let epoch = state.config.status_icons.epoch();
+    state.compose_at(106, 30, epoch).expect("frame");
+    assert!(state.tick_status_frame(epoch + INTERVAL, false));
+
+    let remote = ClientEndpointId::Ssh(remote_profile().id);
+    state.collapsed_endpoints.insert(remote);
+    state.compose_at(106, 30, epoch + INTERVAL).expect("frame");
+    assert!(!state.tick_status_frame(epoch + INTERVAL * 2, false));
 }
 
 #[test]
