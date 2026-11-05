@@ -527,6 +527,23 @@ fn collapsed_explicit_group_keeps_only_focused_child_visible() {
 }
 
 #[test]
+fn closed_parent_does_not_leave_collapse_key_for_a_reused_id() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(explicit_tree_snapshot()));
+    let endpoint = state.active_endpoint_id.clone();
+    state.toggle_collapsed_group(&endpoint, "workspace-parent:ws_1".into());
+    state.toggle_collapsed_group(&endpoint, "repo-key".into());
+
+    let mut replacement = explicit_tree_snapshot();
+    replacement.revision += 1;
+    replacement.workspaces.remove(0);
+    state.set_snapshot(Box::new(replacement));
+
+    assert!(!state.group_is_collapsed(&endpoint, "workspace-parent:ws_1"));
+    assert!(state.group_is_collapsed(&endpoint, "repo-key"));
+}
+
+#[test]
 fn worktree_root_shows_linked_children_before_explicit_children() {
     let mut projected = explicit_tree_snapshot();
     projected.workspaces[0].worktree = Some(ClientShellWorktree {
@@ -629,6 +646,29 @@ fn workspace_drag_moves_explicit_parent_as_one_block_and_rejects_child() {
                     | crate::api::schema::Method::WorkspaceMove(_)
             )
     )));
+}
+
+#[test]
+fn workspace_drag_leaves_foreign_child_with_the_same_worktree_key() {
+    let mut projected = explicit_tree_snapshot();
+    let worktree = ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    };
+    projected.workspaces[2].worktree = Some(worktree.clone());
+    projected.workspaces[1].worktree = Some(worktree);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    let method = state.workspace_move_method("ws_other", Some("ws_1"));
+    assert!(
+        matches!(
+            &method,
+            Some(crate::api::schema::Method::WorkspaceMoveBlock(params))
+                if params.workspace_ids == ["ws_other"]
+        ),
+        "{method:?}"
+    );
 }
 
 #[test]

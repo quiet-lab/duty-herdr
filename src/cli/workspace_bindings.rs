@@ -246,11 +246,37 @@ fn move_method(matches: &ArgMatches) -> Result<Method, ParseError> {
     plan_move(&workspaces, &source, &placement)
 }
 
+/// Accepts the id forms the server accepts: the id itself, `w_N` and `N`.
+fn resolve_workspace_id<'a>(workspaces: &'a [WorkspaceInfo], requested: &'a str) -> &'a str {
+    workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == requested)
+        .or_else(|| {
+            let number = requested
+                .strip_prefix("w_")
+                .unwrap_or(requested)
+                .parse::<usize>()
+                .ok()?;
+            workspaces.get(number.checked_sub(1)?)
+        })
+        .map_or(requested, |workspace| &workspace.workspace_id)
+}
+
 fn plan_move(
     workspaces: &[WorkspaceInfo],
     source: &str,
     placement: &WorkspaceMovePlacement,
 ) -> Result<Method, ParseError> {
+    let source = resolve_workspace_id(workspaces, source);
+    let placement = &match placement {
+        WorkspaceMovePlacement::Before(target) => {
+            WorkspaceMovePlacement::Before(resolve_workspace_id(workspaces, target).to_owned())
+        }
+        WorkspaceMovePlacement::After(target) => {
+            WorkspaceMovePlacement::After(resolve_workspace_id(workspaces, target).to_owned())
+        }
+        other => other.clone(),
+    };
     let nodes = workspaces
         .iter()
         .map(|workspace| WorkspaceNode {
@@ -409,6 +435,40 @@ mod tests {
         );
         assert!(request("set-parent", &["w2"]).is_err());
         assert!(request("set-parent", &["w2", "--parent", "w1", "--clear"]).is_err());
+    }
+
+    #[test]
+    fn move_accepts_the_id_forms_the_server_accepts() {
+        let info = |id: &str, parent: Option<&str>| WorkspaceInfo {
+            workspace_id: id.into(),
+            number: 0,
+            label: id.into(),
+            focused: false,
+            pane_count: 1,
+            tab_count: 1,
+            active_tab_id: format!("{id}:t1"),
+            agent_status: crate::api::schema::AgentStatus::Unknown,
+            tokens: HashMap::new(),
+            worktree: None,
+            parent_workspace_id: parent.map(str::to_owned),
+        };
+        let workspaces = [info("w7", None), info("w9", Some("w7")), info("w3", None)];
+        for (source, target) in [("w3", "w7"), ("3", "1"), ("w_3", "w_1")] {
+            let method = plan_move(
+                &workspaces,
+                source,
+                &WorkspaceMovePlacement::Before(target.into()),
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    &method,
+                    Method::WorkspaceMove(params)
+                        if params.workspace_id == "w3" && params.insert_index == 0
+                ),
+                "{source} before {target}: {method:?}"
+            );
+        }
     }
 
     #[test]

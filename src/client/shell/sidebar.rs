@@ -514,14 +514,11 @@ pub(crate) fn workspace_entries(
                 indented: false,
                 last_child: false,
             });
-            let children = explicit.get(&index).map_or(&[][..], Vec::as_slice);
-            let key = explicit_group_key(&workspace.workspace_id);
-            push_child_entries(
-                snapshot,
-                children.to_vec(),
-                collapsed_groups.contains(&key),
-                &mut entries,
-            );
+            if let Some(children) = explicit.get(&index) {
+                let collapsed =
+                    collapsed_groups.contains(&explicit_group_key(&workspace.workspace_id));
+                push_child_entries(snapshot, children.clone(), collapsed, &mut entries);
+            }
             continue;
         };
         if !emitted.insert(&worktree.key) {
@@ -591,9 +588,27 @@ fn push_child_entries(
     }
 }
 
+const EXPLICIT_GROUP_PREFIX: &str = "workspace-parent:";
+
 /// Collapse key of a parent whose only children are explicit ones.
 pub(in crate::client::shell) fn explicit_group_key(workspace_id: &str) -> String {
-    format!("workspace-parent:{workspace_id}")
+    format!("{EXPLICIT_GROUP_PREFIX}{workspace_id}")
+}
+
+/// Workspace ids can return after a restart, so a closed parent must not leave
+/// its collapse key behind for a new workspace to inherit.
+pub(in crate::client::shell) fn prune_explicit_group_keys(
+    groups: &mut HashSet<String>,
+    snapshot: &ClientShellSnapshot,
+) {
+    groups.retain(|key| {
+        key.strip_prefix(EXPLICIT_GROUP_PREFIX).is_none_or(|id| {
+            snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.workspace_id == id)
+        })
+    });
 }
 
 pub(in crate::client::shell) fn has_explicit_children(
@@ -697,6 +712,9 @@ pub(in crate::client::shell) fn displayed_workspace_status(
     workspace: &ClientShellWorkspace,
     collapsed_groups: &HashSet<String>,
 ) -> crate::api::schema::AgentStatus {
+    if collapsed_groups.is_empty() {
+        return workspace.agent_status;
+    }
     let Some(key) = snapshot
         .workspaces
         .iter()

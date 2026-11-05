@@ -544,6 +544,20 @@ mod tests {
     }
 
     #[test]
+    fn root_sharing_a_key_with_a_child_of_another_parent_moves_alone() {
+        let nodes = [
+            wt("r", "key", false),
+            root("p"),
+            WorkspaceNode {
+                parent_id: Some("p"),
+                ..wt("c", "key", false)
+            },
+        ];
+        let order = moved(&nodes, "r", WorkspaceMovePlacement::Index(1));
+        assert_eq!(order, ["p", "c", "r"]);
+    }
+
+    #[test]
     fn parent_moves_with_explicit_children_as_one_block() {
         let nodes = [
             root("a"),

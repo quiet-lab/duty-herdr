@@ -295,6 +295,18 @@ mod tests {
     }
 
     #[test]
+    fn parent_link_is_optional_in_generation_one_snapshot() {
+        let frozen: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-snapshot-v1.json"
+        )))
+        .unwrap();
+        assert!(frozen["workspaces"][0].get("parent_workspace_id").is_none());
+        let snapshot: ClientShellSnapshot = serde_json::from_value(frozen).unwrap();
+        assert_eq!(snapshot.workspaces[0].parent_workspace_id, None);
+    }
+
+    #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
         let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot).unwrap()

@@ -548,7 +548,9 @@ pub(crate) struct KeysConfigOverlay {
     goto: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     move_workspace_up: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     move_workspace_down: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_up: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_down: Option<BindingConfig>,

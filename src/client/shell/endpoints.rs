@@ -710,6 +710,14 @@ impl ClientShellState {
         else {
             return;
         };
+        let collapsed_groups = if endpoint_id.is_local() {
+            Some(&mut self.collapsed_groups)
+        } else {
+            self.remote_collapsed_groups.get_mut(endpoint_id)
+        };
+        if let Some(groups) = collapsed_groups {
+            sidebar::prune_explicit_group_keys(groups, &snapshot);
+        }
         if endpoint_id == &self.active_endpoint_id {
             self.apply_active_snapshot(snapshot, generation);
         }

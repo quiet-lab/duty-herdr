@@ -585,7 +585,7 @@ impl ClientShellState {
             .map(|(_, target)| target)
     }
 
-    fn workspace_move_method(
+    pub(super) fn workspace_move_method(
         &self,
         source_workspace_id: &str,
         before_workspace_id: Option<&str>,
@@ -632,11 +632,12 @@ impl ClientShellState {
             .as_ref()
             .map(|worktree| worktree.key.as_str());
         let in_block = |workspace: &ClientShellWorkspace| {
-            workspace
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.key.as_str())
-                == worktree_key
+            workspace.parent_workspace_id.is_none()
+                && workspace
+                    .worktree
+                    .as_ref()
+                    .map(|worktree| worktree.key.as_str())
+                    == worktree_key
                 && worktree_key.is_some()
         };
         let block_root_ids = snapshot

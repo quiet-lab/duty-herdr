@@ -160,8 +160,8 @@ herdr workspace move <ws> --index <N>
 
 ```toml
 [keys]
-move_workspace_up = "prefix+shift+k"
-move_workspace_down = "prefix+shift+j"
+move_workspace_up = "prefix+alt+up"
+move_workspace_down = "prefix+alt+down"
 ```
 
 ## Установка и обновление
