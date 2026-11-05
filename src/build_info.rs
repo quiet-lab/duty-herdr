@@ -33,6 +33,34 @@ fn format_version_line(version: &str, build_id: Option<&str>, commit: Option<&st
     }
 }
 
+/// duty-herdr fork: identity of the running build for update notices and stored
+/// release notes. A stable build with `HERDR_BUILD_ID` reads `0.9.5 (duty-v0.9.5.1)`,
+/// so a rebuild of the same Cargo version is told apart from the installed one.
+pub fn release_identity() -> String {
+    match channel() {
+        "stable" => format_release_identity(BASE_VERSION, build_id()),
+        _ => version(),
+    }
+}
+
+/// `0.9.5` without a build id, `0.9.5 (duty-v0.9.5.1)` with one.
+pub fn format_release_identity(version: &str, build_id: Option<&str>) -> String {
+    match build_id {
+        Some(build_id) => format!("{version} ({build_id})"),
+        None => version.to_string(),
+    }
+}
+
+/// Splits an identity from [`format_release_identity`] into the version and the build id.
+pub fn split_release_identity(identity: &str) -> (&str, Option<&str>) {
+    identity
+        .strip_suffix(')')
+        .and_then(|rest| rest.split_once(" ("))
+        .map_or((identity, None), |(version, build_id)| {
+            (version, Some(build_id))
+        })
+}
+
 pub fn version() -> String {
     match channel() {
         "stable" => BASE_VERSION.to_string(),
@@ -63,6 +91,22 @@ mod tests {
     #[test]
     fn stable_version_defaults_to_cargo_version() {
         assert!(!super::version().is_empty());
+    }
+
+    #[test]
+    fn release_identity_round_trips_build_id() {
+        let identity = super::format_release_identity("0.9.5", Some("duty-v0.9.5.1"));
+        assert_eq!(identity, "0.9.5 (duty-v0.9.5.1)");
+        assert_eq!(
+            super::split_release_identity(&identity),
+            ("0.9.5", Some("duty-v0.9.5.1"))
+        );
+        assert_eq!(super::format_release_identity("0.9.5", None), "0.9.5");
+        assert_eq!(super::split_release_identity("0.9.5"), ("0.9.5", None));
+        assert_eq!(
+            super::split_release_identity("0.9.5-preview.abc"),
+            ("0.9.5-preview.abc", None)
+        );
     }
 
     #[test]

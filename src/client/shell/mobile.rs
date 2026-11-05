@@ -102,29 +102,34 @@ fn render_header_status(
     let tab_status = compact_tab_status(snapshot, workspace);
     let tab_width = display_width(&tab_status).saturating_add(1).min(area.width);
     let name_width = area.width.saturating_sub(tab_width);
+    let icon_cell = format!(
+        " {} ",
+        status_icon(
+            workspace.agent_status,
+            config.status_indicators,
+            &config.status_icons
+        )
+    );
+    // The icon may be one or two cells wide; the name starts after the icon and
+    // its trailing separator.
+    let icon_width = display_width(&icon_cell).min(name_width);
     put_text(
         buffer,
         area.x,
         area.y,
-        name_width.min(3),
-        &format!(
-            " {} ",
-            status_icon(
-                workspace.agent_status,
-                config.status_indicators,
-                &config.status_icons
-            )
-        ),
+        icon_width,
+        &icon_cell,
         Style::default()
             .fg(status_color(workspace.agent_status, palette))
             .bg(palette.panel_bg),
     );
+    let label_width = name_width.saturating_sub(icon_width);
     put_text(
         buffer,
-        area.x.saturating_add(3),
+        area.x.saturating_add(icon_width),
         area.y,
-        name_width.saturating_sub(3),
-        &crate::ui::truncate_end(&workspace.label, usize::from(name_width.saturating_sub(4))),
+        label_width,
+        &crate::ui::truncate_end(&workspace.label, usize::from(label_width.saturating_sub(1))),
         Style::default()
             .fg(palette.text)
             .bg(palette.panel_bg)

@@ -273,13 +273,32 @@ pub(super) fn agent_row(
     let tab_label = tab
         .filter(|tab| tab_count > 1 || tab.custom_label)
         .map(|tab| tab.label.as_str());
+    let canonical_agent = agent
+        .agent
+        .as_deref()
+        .and_then(crate::detect::parse_agent_label);
     // Label of the tab currently selected in the agent's workspace; the snapshot's
-    // `active_tab_id` already reflects this client's own tab selection.
-    let focused_tab_label = snapshot
-        .tabs
+    // `active_tab_id` already reflects this client's own tab selection. Looked up only
+    // when this agent's rows show the `focused_tab` token.
+    let focused_tab_label = config
+        .agents
+        .rows_for_agent(canonical_agent)
         .iter()
-        .find(|candidate| candidate.tab_id == workspace.active_tab_id)
-        .map(|tab| tab.label.as_str());
+        .flatten()
+        .any(|token| {
+            matches!(
+                token.parts().0,
+                crate::config::AgentSidebarToken::FocusedTab
+            )
+        })
+        .then(|| {
+            snapshot
+                .tabs
+                .iter()
+                .find(|candidate| candidate.tab_id == workspace.active_tab_id)
+                .map(|tab| tab.label.as_str())
+        })
+        .flatten();
     let agent_label = agent
         .display_agent
         .as_deref()
@@ -296,10 +315,6 @@ pub(super) fn agent_row(
         .get(status_text(agent.agent_status))
         .map(String::as_str)
         .unwrap_or_else(|| sidebar_status_text(agent.agent_status));
-    let canonical_agent = agent
-        .agent
-        .as_deref()
-        .and_then(crate::detect::parse_agent_label);
     let rows = crate::ui::sidebar_agent_rows(
         &config.agents,
         crate::ui::AgentTokenContext {
