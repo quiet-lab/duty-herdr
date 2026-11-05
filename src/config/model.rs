@@ -1,8 +1,12 @@
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::NonZeroUsize,
+};
 
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
+use super::screen_cursor::ScreenCursorShapeConfig;
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
     SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
@@ -1048,6 +1052,9 @@ pub struct UiConfig {
     pub status_indicators: StatusIndicatorStyle,
     /// Per-status icon overrides applied on top of `status_indicators`.
     pub status_icons: StatusIcons,
+    /// Cursor shape rules keyed by canonical agent id, matched against the agent's detection screen.
+    #[serde(deserialize_with = "super::screen_cursor::deserialize_cursor_shape_by_screen")]
+    pub cursor_shape_by_screen: BTreeMap<String, ScreenCursorShapeConfig>,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1277,6 +1284,7 @@ impl Default for UiConfig {
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             status_icons: StatusIcons::default(),
+            cursor_shape_by_screen: BTreeMap::new(),
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),

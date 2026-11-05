@@ -3,6 +3,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 mod io;
 mod keybinds;
 mod model;
+mod screen_cursor;
 mod sidebar;
 mod sound;
 mod tab_bar;
@@ -28,6 +29,7 @@ pub use self::{
         TabBarPositionConfig, ToastClipboardPosition, ToastConfig, ToastDelivery,
         ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
+    screen_cursor::{ScreenCursorRules, ScreenCursorShapeConfig},
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,

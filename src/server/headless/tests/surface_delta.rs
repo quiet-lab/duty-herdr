@@ -226,3 +226,47 @@ async fn surface_delta_preserves_graphics_baseline_through_queue_recovery() {
     assert_eq!(recovered.graphics.assets[0].data, [0, 255, 0, 255]);
     shutdown_test_runtimes(&mut server);
 }
+
+#[tokio::test]
+async fn retained_patch_carries_cursor_shape_change_without_cell_changes() {
+    let (mut server, _control_rx, render_rx, pane_id) =
+        retained_test_server_with_control(b"initial text");
+    server.render_and_stream();
+    let _ = receive_message(&render_rx);
+
+    let render = crate::pane::ScreenCursorRender {
+        dirty: server.app.render_dirty.clone(),
+        notify: server.app.render_notify.clone(),
+    };
+    let rules = std::sync::Arc::new(toml::from_str("default = \"steady_bar\"").expect("rules"));
+    let sources = HashSet::from([pane_id]);
+
+    {
+        let runtime = server
+            .app
+            .state
+            .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
+            .expect("pane runtime");
+        runtime.sync_screen_cursor_rules(Some(rules), &render);
+        runtime.test_evaluate_screen_cursor(&render);
+    }
+    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    let ServerMessage::PaneSurfacePatch(patch) = receive_message(&render_rx).1 else {
+        panic!("expected a surface patch");
+    };
+    assert!(patch.rows.is_empty(), "no cell changed");
+    assert_eq!(patch.cursor.expect("cursor").shape, 6);
+
+    server
+        .app
+        .state
+        .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
+        .expect("pane runtime")
+        .sync_screen_cursor_rules(None, &render);
+    assert!(server.render_retained_pane_surface_and_stream(&sources));
+    let ServerMessage::PaneSurfacePatch(patch) = receive_message(&render_rx).1 else {
+        panic!("expected a surface patch");
+    };
+    assert!(patch.rows.is_empty(), "no cell changed");
+    assert_eq!(patch.cursor.expect("cursor").shape, 0);
+}

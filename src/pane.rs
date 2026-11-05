@@ -32,6 +32,7 @@ mod input;
 mod input_echo;
 mod kitty_keyboard;
 mod osc;
+mod screen_cursor;
 mod state;
 mod terminal;
 mod xtgettcap;
@@ -44,6 +45,7 @@ use self::agent_detection::{
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
+pub(crate) use self::screen_cursor::ScreenCursorRender;
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]
@@ -1521,6 +1523,7 @@ pub struct PaneRuntime {
     // Task handles for deterministic shutdown
     compression: TerminalCompressionTask,
     detect_handle: Option<tokio::task::AbortHandle>,
+    screen_cursor: Arc<screen_cursor::ScreenCursorEvaluator>,
 }
 
 /// What the test channel reports to a waiting echo-confirmed submission.
@@ -1791,6 +1794,7 @@ impl Drop for PaneRuntime {
         if let Some(handle) = &self.detect_handle {
             handle.abort();
         }
+        self.screen_cursor.abort();
         self.compression.abort();
         self.io.shutdown();
         if !self.preserve_processes_on_drop {
@@ -2320,6 +2324,7 @@ impl PaneRuntime {
         if let Some(handle) = self.detect_handle.take() {
             handle.abort();
         }
+        self.screen_cursor.abort();
         self.compression.abort();
         self.io.shutdown();
         shutdown_pane_processes(
@@ -2347,6 +2352,7 @@ impl PaneRuntime {
         if let Some(handle) = self.detect_handle.take() {
             handle.abort();
         }
+        self.screen_cursor.abort();
         self.compression.abort();
         self.preserve_processes_on_drop = true;
     }
@@ -2648,8 +2654,10 @@ impl PaneRuntime {
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let screen_cursor = Arc::<screen_cursor::ScreenCursorEvaluator>::default();
 
         let io = {
+            let screen_cursor_for_read = screen_cursor.clone();
             let terminal = terminal.clone();
             let response_writer = response_tx.clone();
             let render_notify = render_notify.clone();
@@ -2677,6 +2685,7 @@ impl PaneRuntime {
                 compression_wake.wake();
                 publish_terminal_bells(pane_id, result.terminal_bells, &read_events);
                 observe_detection_content_change(bytes, &detection_content_seq);
+                screen_cursor_for_read.observe_output();
                 let title_requested =
                     result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
                 let render_requested = result.request_render && render_dirty.request_pty(pane_id);
@@ -2764,6 +2773,7 @@ impl PaneRuntime {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(detect_handle),
+            screen_cursor,
         })
     }
 
@@ -2817,6 +2827,7 @@ impl PaneRuntime {
         let child_wait_completed = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let screen_cursor = Arc::<screen_cursor::ScreenCursorEvaluator>::default();
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
         {
@@ -2861,6 +2872,7 @@ impl PaneRuntime {
             let content_seq = content_seq.clone();
             let content_write_lock = content_write_lock.clone();
             let detection_content_seq = detection_content_seq.clone();
+            let screen_cursor_for_read = screen_cursor.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
             let reported_cwd = reported_cwd.clone();
@@ -2882,6 +2894,7 @@ impl PaneRuntime {
                 if agent_detection == AgentDetection::Enabled {
                     observe_detection_content_change(bytes, &detection_content_seq);
                 }
+                screen_cursor_for_read.observe_output();
                 let title_requested =
                     result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
                 let render_requested = result.request_render && render_dirty.request_pty(pane_id);
@@ -3377,6 +3390,7 @@ impl PaneRuntime {
             preserve_processes_on_drop: false,
             compression,
             detect_handle,
+            screen_cursor,
         })
     }
 
@@ -3397,6 +3411,15 @@ impl PaneRuntime {
     #[cfg(test)]
     pub(crate) fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
         self.detect_reset_notify.clone()
+    }
+
+    pub(crate) fn sync_screen_cursor_rules(
+        &self,
+        rules: Option<Arc<crate::config::ScreenCursorShapeConfig>>,
+        render: &ScreenCursorRender,
+    ) {
+        self.screen_cursor
+            .sync_rules(rules, self.pane_id, &self.terminal, render);
     }
 
     pub fn set_self_reported_agent_active(&self, active: bool) {
@@ -3443,6 +3466,7 @@ impl PaneRuntime {
         drop(_content_write_guard);
         self.compression.wake();
         mark_detection_content_changed(&self.detection_content_seq);
+        self.screen_cursor.observe_output();
         self.io.resize(
             rows,
             cols,
@@ -3482,6 +3506,7 @@ impl PaneRuntime {
         drop(guard);
         self.compression.wake();
         mark_detection_content_changed(&self.detection_content_seq);
+        self.screen_cursor.observe_output();
         result
     }
 
@@ -4132,6 +4157,11 @@ impl PaneRuntime {
         (release_tx, writer)
     }
 
+    pub(crate) fn test_evaluate_screen_cursor(&self, render: &ScreenCursorRender) {
+        self.screen_cursor
+            .evaluate(self.pane_id, &self.terminal, render);
+    }
+
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) -> Vec<Bytes> {
         let _content_write_guard = match self.content_write_lock.lock() {
             Ok(guard) => guard,
@@ -4220,6 +4250,7 @@ impl PaneRuntime {
                 preserve_processes_on_drop: true,
                 compression,
                 detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+                screen_cursor: Default::default(),
             },
             rx,
         )
@@ -5573,6 +5604,7 @@ mod tests {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+            screen_cursor: Default::default(),
         };
 
         assert!(runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
@@ -5614,6 +5646,7 @@ mod tests {
             preserve_processes_on_drop: true,
             compression,
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
+            screen_cursor: Default::default(),
         };
 
         assert!(!runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));

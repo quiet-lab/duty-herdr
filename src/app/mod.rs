@@ -163,6 +163,7 @@ pub struct App {
     pub(crate) last_presentation_at: Option<Instant>,
     pub render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
+    pub(crate) screen_cursor_rules: crate::config::ScreenCursorRules,
     pub(crate) full_redraw_pending: bool,
     pub(crate) overlay_panes: HashMap<crate::layout::PaneId, OverlayPaneState>,
     pub(crate) config_reloaded_from_disk: bool,
@@ -684,6 +685,9 @@ impl App {
             policy,
             render_notify,
             render_dirty,
+            screen_cursor_rules: crate::config::ScreenCursorRules::from_config(
+                &config.ui.cursor_shape_by_screen,
+            ),
             full_redraw_pending: false,
             overlay_panes: HashMap::new(),
             config_reloaded_from_disk: false,
@@ -693,6 +697,7 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app.refresh_restored_workspace_git_metadata();
+        app.sync_screen_cursor_rules();
         Ok(app)
     }
 
@@ -756,6 +761,7 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
         app.refresh_restored_workspace_git_metadata();
+        app.sync_screen_cursor_rules();
         Ok(app)
     }
 
@@ -909,6 +915,10 @@ impl App {
                 ));
 
                 self.loaded_host_cursor = config.ui.host_cursor;
+                self.screen_cursor_rules = crate::config::ScreenCursorRules::from_config(
+                    &config.ui.cursor_shape_by_screen,
+                );
+                self.sync_screen_cursor_rules();
                 self.state.confirm_close = config.ui.confirm_close;
                 self.state.pane_borders = config.ui.pane_borders;
                 self.state.pane_outer_borders = config.ui.pane_outer_borders;
@@ -1756,6 +1766,134 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         restore_xdg_state_home(original_xdg_state_home);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn reload_config_applies_cursor_shape_rules_of_the_panes_agent() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-config-cursor-shape");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = Some(crate::detect::Agent::Claude);
+        app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 6, b"text"),
+        );
+        let render = crate::pane::ScreenCursorRender {
+            dirty: app.render_dirty.clone(),
+            notify: app.render_notify.clone(),
+        };
+        let reload_and_read_shape = |app: &mut App, config: &str, status| {
+            std::fs::write(&path, config).unwrap();
+            assert_eq!(app.reload_config().status, status);
+            let runtime = app.terminal_runtimes.get(&terminal_id).unwrap();
+            runtime.test_evaluate_screen_cursor(&render);
+            runtime
+                .cursor_state(ratatui::layout::Rect::new(0, 0, 40, 6), true)
+                .expect("cursor")
+                .shape
+        };
+        use crate::config::ConfigReloadStatus::{Applied, Partial};
+
+        let bar_for_claude = "[ui.cursor_shape_by_screen.claude]\ndefault = \"steady_bar\"\n";
+        assert_eq!(reload_and_read_shape(&mut app, bar_for_claude, Applied), 6);
+
+        // An invalid [ui] section keeps the rules already in force.
+        let invalid = "[ui.cursor_shape_by_screen.claude]\ndefault = \"beam\"\n";
+        assert_eq!(reload_and_read_shape(&mut app, invalid, Partial), 6);
+
+        let bar_for_codex = "[ui.cursor_shape_by_screen.codex]\ndefault = \"steady_bar\"\n";
+        assert_eq!(reload_and_read_shape(&mut app, bar_for_codex, Applied), 0);
+
+        assert_eq!(reload_and_read_shape(&mut app, bar_for_claude, Applied), 6);
+        assert_eq!(reload_and_read_shape(&mut app, "", Applied), 0);
+
+        // The rules leave with the agent.
+        assert_eq!(reload_and_read_shape(&mut app, bar_for_claude, Applied), 6);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .detected_agent = None;
+        assert_eq!(reload_and_read_shape(&mut app, bar_for_claude, Applied), 0);
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test]
+    async fn agent_events_bind_and_lift_cursor_shape_rules() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("cursor-shape-agent-events");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[ui.cursor_shape_by_screen.claude]\ndefault = \"steady_bar\"\n",
+        )
+        .unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("one")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 6, b"text"),
+        );
+        app.reload_config();
+        let render = crate::pane::ScreenCursorRender {
+            dirty: app.render_dirty.clone(),
+            notify: app.render_notify.clone(),
+        };
+        let read_shape = |app: &App| {
+            let runtime = app.terminal_runtimes.get(&terminal_id).unwrap();
+            runtime.test_evaluate_screen_cursor(&render);
+            runtime
+                .cursor_state(ratatui::layout::Rect::new(0, 0, 40, 6), true)
+                .expect("cursor")
+                .shape
+        };
+        assert_eq!(read_shape(&app), 0, "no agent yet");
+
+        let agent = crate::detect::Agent::Claude;
+        app.handle_internal_event(crate::events::AppEvent::AgentProcessDetected {
+            pane_id,
+            agent,
+            observed_at: Instant::now(),
+        });
+        assert_eq!(read_shape(&app), 6, "agent detected");
+
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(agent),
+            state: crate::detect::AgentState::Unknown,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: true,
+            observed_at: Instant::now(),
+        });
+        assert_eq!(read_shape(&app), 0, "agent exited");
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

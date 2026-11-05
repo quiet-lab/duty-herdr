@@ -1505,6 +1505,48 @@ mod tests {
     }
 
     #[test]
+    fn blit_frame_writes_new_cursor_shape_when_cells_are_unchanged() {
+        let frame_with_shape = |shape| FrameData {
+            cells: vec![make_cell("A", 0, 0, 0)],
+            width: 1,
+            height: 1,
+            cursor: Some(CursorState {
+                x: 0,
+                y: 0,
+                visible: true,
+                shape,
+            }),
+            hyperlinks: Vec::new(),
+            graphics: Vec::new(),
+        };
+        let first = frame_with_shape(6);
+        let second = frame_with_shape(2);
+        let mut last_visible_cursor = None;
+        let mut last_cursor_shape = 0;
+        let mut blit = |frame: &FrameData, previous: Option<&FrameData>| {
+            let mut output = Vec::new();
+            blit_frame_to_with_cursor_memory_and_policy(
+                &mut output,
+                frame,
+                previous,
+                &mut last_visible_cursor,
+                &mut last_cursor_shape,
+                true,
+                false,
+            );
+            String::from_utf8(output).unwrap()
+        };
+
+        assert!(blit(&first, None).contains("\x1b[6 q"));
+        let update = blit(&second, Some(&first));
+        assert!(update.contains("\x1b[2 q"), "{update:?}");
+        assert!(
+            !update.contains('A'),
+            "cells must not be rewritten: {update:?}"
+        );
+    }
+
+    #[test]
     fn blit_frame_emits_cursor_shape_before_visibility_without_touching_ime_anchor() {
         let frame = FrameData {
             cells: vec![make_cell("A", 0, 0, 0)],
