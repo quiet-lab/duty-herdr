@@ -25,7 +25,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
-    pub(super) status_icons: crate::config::StatusIcons,
+    pub(super) status_icons: status_frames::ShellStatusIcons,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
     pub(super) toast_delay_seconds: u64,
@@ -1884,9 +1884,34 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.config.status_icons.next_frame_at(now))
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)
+    }
+
+    /// Whether the status icon frame on screen is out of date and a repaint can show
+    /// the new one. The repaint reuses the retained pane surface and the snapshot. A
+    /// frozen presentation would discard the frame after `compose` has consumed its
+    /// graphics state, and an incoherent surface composes nothing.
+    pub(crate) fn tick_status_frame(
+        &self,
+        now: std::time::Instant,
+        presentation_frozen: bool,
+    ) -> bool {
+        !presentation_frozen
+            && self.config.status_icons.frame_stale(now)
+            && self.pane_surface_coherent()
+    }
+
+    pub(super) fn pane_surface_coherent(&self) -> bool {
+        self.pending_pane_surface.is_none()
+            && self.pane_surface_generation == self.active_snapshot_generation
+            && matches!(
+                (self.snapshot.as_deref(), self.pane_surface.as_ref()),
+                (Some(snapshot), Some(surface))
+                    if snapshot.revision == surface.projection_revision
+            )
     }
 
     pub(crate) fn invalidate_pane_surface(&mut self) {

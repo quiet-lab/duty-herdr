@@ -40,7 +40,7 @@ pub(crate) fn render_client_overlay(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
-    icons: &crate::config::StatusIcons,
+    icons: &super::status_frames::ShellStatusIcons,
     p: &Palette,
 ) -> Option<OverlayRender> {
     if !matches!(
@@ -707,7 +707,7 @@ fn render_navigator_overlay(
     n: &ClientNavigatorOverlay,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    icons: &crate::config::StatusIcons,
+    icons: &super::status_frames::ShellStatusIcons,
     p: &Palette,
 ) -> Option<OverlayRender> {
     let a = b.area;

@@ -125,30 +125,145 @@ impl StatusIndicatorStyle {
     }
 }
 
+const DEFAULT_STATUS_FRAME_INTERVAL_MS: u32 = 400;
+const STATUS_FRAME_INTERVAL_RANGE_MS: std::ops::RangeInclusive<u32> = 100..=5000;
+
 /// Per-status icon overrides drawn on top of the selected `status_indicators`
-/// style. Unset entries fall back to the style's built-in symbol.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+/// style. Unset entries fall back to the style's built-in symbol. An entry with
+/// several frames is shown in a loop, one frame per `frame_interval_ms`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct StatusIcons {
-    #[serde(deserialize_with = "deserialize_status_icon")]
-    pub idle: Option<String>,
-    #[serde(deserialize_with = "deserialize_status_icon")]
-    pub working: Option<String>,
-    #[serde(deserialize_with = "deserialize_status_icon")]
-    pub blocked: Option<String>,
-    #[serde(deserialize_with = "deserialize_status_icon")]
-    pub done: Option<String>,
-    #[serde(deserialize_with = "deserialize_status_icon")]
-    pub unknown: Option<String>,
+    pub idle: Option<StatusIconFrames>,
+    pub working: Option<StatusIconFrames>,
+    pub blocked: Option<StatusIconFrames>,
+    pub done: Option<StatusIconFrames>,
+    pub unknown: Option<StatusIconFrames>,
+    #[serde(deserialize_with = "deserialize_status_frame_interval")]
+    pub frame_interval_ms: u32,
 }
 
-fn deserialize_status_icon<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+impl Default for StatusIcons {
+    fn default() -> Self {
+        Self {
+            idle: None,
+            working: None,
+            blocked: None,
+            done: None,
+            unknown: None,
+            frame_interval_ms: DEFAULT_STATUS_FRAME_INTERVAL_MS,
+        }
+    }
+}
+
+/// The frames of one status icon: a non-empty list of equally wide symbols.
+/// In TOML it is a single string or an array of strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusIconFrames(Vec<String>);
+
+impl StatusIconFrames {
+    pub fn new(frames: Vec<String>) -> Result<Self, String> {
+        let Some(first) = frames.first() else {
+            return Err("status icon frame list must not be empty".into());
+        };
+        for frame in &frames {
+            validate_status_icon(frame)?;
+        }
+        let width = unicode_width::UnicodeWidthStr::width(first.as_str());
+        if let Some(other) = frames
+            .iter()
+            .find(|frame| unicode_width::UnicodeWidthStr::width(frame.as_str()) != width)
+        {
+            return Err(format!(
+                "status icon frames must have the same width: {first:?} is {width} cells wide, \
+                 {other:?} is {} cells wide",
+                unicode_width::UnicodeWidthStr::width(other.as_str())
+            ));
+        }
+        Ok(Self(frames))
+    }
+
+    pub fn is_animated(&self) -> bool {
+        self.0.len() > 1
+    }
+
+    pub fn frames(&self) -> &[String] {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for StatusIconFrames {
+    /// Builds a one-frame icon without validation, for values known in a test.
+    fn from(value: &str) -> Self {
+        Self(vec![value.to_owned()])
+    }
+}
+
+impl Serialize for StatusIconFrames {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.as_slice() {
+            [single] => serializer.serialize_str(single),
+            frames => frames.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StatusIconFrames {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct FramesVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for FramesVisitor {
+            type Value = StatusIconFrames;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a status icon string or an array of status icon strings")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                StatusIconFrames::new(vec![value.to_owned()]).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut frames = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(frame) = seq.next_element::<String>()? {
+                    frames.push(frame);
+                }
+                StatusIconFrames::new(frames).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(FramesVisitor)
+    }
+}
+
+fn deserialize_status_frame_interval<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let value = String::deserialize(deserializer)?;
-    validate_status_icon(&value).map_err(serde::de::Error::custom)?;
-    Ok(Some(value))
+    let value = i64::deserialize(deserializer)?;
+    u32::try_from(value)
+        .ok()
+        .filter(|value| STATUS_FRAME_INTERVAL_RANGE_MS.contains(value))
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "frame_interval_ms {value} is out of range; it must be {}..={}",
+                STATUS_FRAME_INTERVAL_RANGE_MS.start(),
+                STATUS_FRAME_INTERVAL_RANGE_MS.end()
+            ))
+        })
 }
 
 /// Status icons must render predictably in a fixed-width cell grid: one or
@@ -1557,8 +1672,8 @@ idle = "z"
 "#,
         )
         .unwrap();
-        assert_eq!(config.ui.status_icons.working.as_deref(), Some("🟡"));
-        assert_eq!(config.ui.status_icons.idle.as_deref(), Some("z"));
+        assert_eq!(config.ui.status_icons.working, Some("🟡".into()));
+        assert_eq!(config.ui.status_icons.idle, Some("z".into()));
         assert_eq!(config.ui.status_icons.blocked, None);
         assert_eq!(config.ui.status_icons.done, None);
         assert_eq!(config.ui.status_icons.unknown, None);
@@ -1582,6 +1697,88 @@ idle = "z"
                 "value {value:?}: error {err:?} should mention {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn status_icons_parse_frame_lists_and_interval() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.status_icons]
+working = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"]
+idle = "☕"
+frame_interval_ms = 250
+"#,
+        )
+        .unwrap();
+        let icons = &config.ui.status_icons;
+        let working = icons.working.as_ref().unwrap();
+        assert_eq!(working.frames().len(), 8);
+        assert!(working.is_animated());
+        assert_eq!(icons.idle, Some("☕".into()));
+        assert!(!icons.idle.as_ref().unwrap().is_animated());
+        assert_eq!(icons.frame_interval_ms, 250);
+        assert_eq!(StatusIcons::default().frame_interval_ms, 400);
+
+        let config: Config =
+            toml::from_str("[ui.status_icons]\nworking = [\"x\"]\nframe_interval_ms = 5000\n")
+                .unwrap();
+        assert_eq!(config.ui.status_icons.working, Some("x".into()));
+    }
+
+    #[test]
+    fn status_icons_reject_invalid_frame_lists() {
+        for (value, expected) in [
+            ("[]", "must not be empty"),
+            ("[\"⚙\u{FE0F}\"]", "U+FE0F"),
+            ("[\"a\", \"⚙\u{FE0F}\"]", "U+FE0F"),
+            ("[\"a\", \"\"]", "must not be empty"),
+            ("[\"abc\"]", "3 cells wide"),
+            ("[\"🌑\", \"x\"]", "same width"),
+            ("[1]", "invalid type"),
+            ("1", "invalid type"),
+        ] {
+            let toml = format!("[ui.status_icons]\nworking = {value}\n");
+            let err = match toml::from_str::<Config>(&toml) {
+                Ok(_) => panic!("value {value} should be rejected"),
+                Err(err) => err.to_string(),
+            };
+            assert!(
+                err.contains(expected),
+                "value {value}: error {err:?} should mention {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_frame_interval_is_range_checked() {
+        for value in [100, 5000] {
+            let toml = format!("[ui.status_icons]\nframe_interval_ms = {value}\n");
+            let config: Config = toml::from_str(&toml).unwrap();
+            assert_eq!(i64::from(config.ui.status_icons.frame_interval_ms), value);
+        }
+        for value in [-1_i64, 0, 99, 5001, 5_000_000_000] {
+            let toml = format!("[ui.status_icons]\nframe_interval_ms = {value}\n");
+            let err = match toml::from_str::<Config>(&toml) {
+                Ok(_) => panic!("interval {value} should be rejected"),
+                Err(err) => err.to_string(),
+            };
+            assert!(err.contains("out of range"), "{value}: {err}");
+        }
+    }
+
+    #[test]
+    fn status_icon_frames_serialize_back_to_their_toml_shape() {
+        #[derive(Serialize)]
+        struct Wrapper {
+            value: StatusIconFrames,
+        }
+        let single = toml::to_string(&Wrapper { value: "x".into() }).unwrap();
+        assert_eq!(single.trim(), "value = \"x\"");
+        let list = toml::to_string(&Wrapper {
+            value: StatusIconFrames::new(vec!["a".into(), "b".into()]).unwrap(),
+        })
+        .unwrap();
+        assert!(list.contains("\"a\"") && list.contains("\"b\""), "{list}");
     }
 
     #[test]
