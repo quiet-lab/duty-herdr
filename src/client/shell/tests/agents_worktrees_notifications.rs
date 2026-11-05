@@ -1682,3 +1682,74 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+#[test]
+fn agent_sidebar_focused_tab_follows_the_selected_tab_of_the_agent_workspace() {
+    let mut projected = snapshot();
+    projected.tabs[0].label = "agent-home".into();
+    let mut second_tab = projected.tabs[0].clone();
+    second_tab.tab_id = "tab_2".into();
+    second_tab.number = 2;
+    second_tab.label = "logs-view".into();
+    second_tab.focused = false;
+    projected.tabs.push(second_tab);
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("pi one".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![
+        vec![crate::config::AgentSidebarToken::Agent],
+        vec![crate::config::AgentSidebarToken::FocusedTab],
+    ];
+    config.ui.sidebar.agents.rows_by_agent.clear();
+    let shell_config = ClientShellConfig::from_config(&config);
+
+    for (active_tab_id, shown, hidden) in [
+        ("tab_2", "logs-view", "agent-home"),
+        ("tab_1", "agent-home", "logs-view"),
+    ] {
+        let mut projected = projected.clone();
+        projected.workspaces[0].active_tab_id = active_tab_id.into();
+
+        let rows = super::super::agent_sidebar::agent_rows(&projected, &shell_config, None);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].rows[1][0].kind,
+            crate::ui::ResolvedTokenKind::Tab(shown.into())
+        );
+
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let (rect, pane_id) = state.hits.agents.first().expect("agent row hit").clone();
+        assert_eq!(pane_id, "pane_1");
+        let row_text = (rect.y..rect.y + rect.height)
+            .map(|y| {
+                (rect.x..rect.x + rect.width)
+                    .map(|x| {
+                        frame.cells[y as usize * frame.width as usize + x as usize]
+                            .symbol
+                            .as_str()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(row_text.contains(shown), "row: {row_text}");
+        assert!(!row_text.contains(hidden), "row: {row_text}");
+    }
+}

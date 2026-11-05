@@ -56,6 +56,7 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) machine: Option<&'a str>,
     pub(crate) workspace: &'a str,
     pub(crate) tab: Option<&'a str>,
+    pub(crate) focused_tab: Option<&'a str>,
     pub(crate) pane: Option<&'a str>,
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
@@ -90,6 +91,9 @@ pub(crate) fn agent_rows(
                         }
                         AgentSidebarToken::Tab => context
                             .tab
+                            .map(|value| ResolvedTokenKind::Tab(value.to_string())),
+                        AgentSidebarToken::FocusedTab => context
+                            .focused_tab
                             .map(|value| ResolvedTokenKind::Tab(value.to_string())),
                         AgentSidebarToken::Pane => context
                             .pane
@@ -195,6 +199,7 @@ mod tests {
     struct Entry {
         workspace: String,
         tab: Option<String>,
+        focused_tab: Option<String>,
         pane: Option<String>,
         agent_label: Option<String>,
         terminal_title: Option<String>,
@@ -207,6 +212,7 @@ mod tests {
         Entry {
             workspace: "repo".into(),
             tab: None,
+            focused_tab: None,
             pane: None,
             agent_label: Some("pi".into()),
             terminal_title: None,
@@ -221,6 +227,7 @@ mod tests {
             machine: None,
             workspace: &entry.workspace,
             tab: entry.tab.as_deref(),
+            focused_tab: entry.focused_tab.as_deref(),
             pane: entry.pane.as_deref(),
             agent_label: entry.agent_label.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
@@ -259,6 +266,27 @@ rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true
             assert_eq!(token.style.dim, Some(dim));
         }
         assert_eq!(agent_rows(&config, context(&entry), "working")[0].len(), 1);
+    }
+
+    #[test]
+    fn focused_tab_resolves_as_text_with_rules_and_drops_when_absent() {
+        let config: AgentsSidebarConfig = toml::from_str(r##"
+rows = [["state_icon", "tab"], [{ token = "focused_tab", fg = "#888", rules = [{ equals = "logs", fg = "#f00" }] }]]
+"##).unwrap();
+        let mut entry = entry();
+        entry.tab = Some("agent".into());
+        assert_eq!(agent_rows(&config, context(&entry), "working").len(), 1);
+        for (focused, color) in [("logs", (255, 0, 0)), ("agent", (0x88, 0x88, 0x88))] {
+            entry.focused_tab = Some(focused.into());
+            let rows = agent_rows(&config, context(&entry), "working");
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0][1].kind, ResolvedTokenKind::Tab("agent".into()));
+            assert_eq!(rows[1][0].kind, ResolvedTokenKind::Tab(focused.into()));
+            assert_eq!(
+                rows[1][0].style.fg.unwrap().ratatui(),
+                ratatui::style::Color::Rgb(color.0, color.1, color.2)
+            );
+        }
     }
 
     #[test]
