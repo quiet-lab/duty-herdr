@@ -11,6 +11,15 @@ use crate::detect::Agent;
 const MAX_SIDEBAR_ROWS: usize = 16;
 const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
 const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
+const MAX_CUSTOM_TOKEN_NAME: usize = 32;
+
+fn is_valid_custom_token_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CUSTOM_TOKEN_NAME
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
 where
@@ -39,16 +48,82 @@ fn validate_sidebar_rows<T>(rows: &[Vec<T>]) -> Result<(), String> {
     Ok(())
 }
 
+/// Name of a user token whose value supplies a color (`fg = "$name"`).
+/// Stored inline so styles stay `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SidebarTokenColor {
-    r: u8,
-    g: u8,
-    b: u8,
+pub struct SidebarColorTokenName {
+    buf: [u8; MAX_CUSTOM_TOKEN_NAME],
+    len: u8,
+}
+
+impl SidebarColorTokenName {
+    fn new(name: &str) -> Option<Self> {
+        if !is_valid_custom_token_name(name) {
+            return None;
+        }
+        let mut buf = [0u8; MAX_CUSTOM_TOKEN_NAME];
+        buf[..name.len()].copy_from_slice(name.as_bytes());
+        Some(Self {
+            buf,
+            len: name.len() as u8,
+        })
+    }
+
+    fn as_str(&self) -> &str {
+        // The buffer only ever holds validated ASCII.
+        std::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTokenColor {
+    Rgb {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    /// Color taken from the value of a user token of the current item.
+    Token(SidebarColorTokenName),
 }
 
 impl SidebarTokenColor {
+    /// Parses `#RGB` or `#RRGGBB`.
+    fn parse_hex(value: &str) -> Option<Self> {
+        let hex = value.strip_prefix('#').filter(|hex| {
+            hex.is_ascii()
+                && matches!(hex.len(), 3 | 6)
+                && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })?;
+        let digit = |index: usize| u8::from_str_radix(&hex[index..=index], 16).ok();
+        let pair = |index: usize| u8::from_str_radix(&hex[index..index + 2], 16).ok();
+        let (r, g, b) = if hex.len() == 3 {
+            (digit(0)? * 17, digit(1)? * 17, digit(2)? * 17)
+        } else {
+            (pair(0)?, pair(2)?, pair(4)?)
+        };
+        Some(Self::Rgb { r, g, b })
+    }
+
+    /// Replaces a token reference with the color in the token's value; a
+    /// missing, empty or non-color value yields `None`.
+    pub(crate) fn resolve(
+        self,
+        tokens: &std::collections::HashMap<String, String>,
+    ) -> Option<Self> {
+        match self {
+            Self::Rgb { .. } => Some(self),
+            Self::Token(name) => tokens
+                .get(name.as_str())
+                .and_then(|value| Self::parse_hex(value)),
+        }
+    }
+
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(self.r, self.g, self.b)
+        match self {
+            Self::Rgb { r, g, b } => ratatui::style::Color::Rgb(r, g, b),
+            // Unresolved references are dropped before rendering.
+            Self::Token(_) => ratatui::style::Color::Reset,
+        }
     }
 }
 
@@ -57,7 +132,10 @@ impl Serialize for SidebarTokenColor {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b))
+        match self {
+            Self::Rgb { r, g, b } => serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}")),
+            Self::Token(name) => serializer.serialize_str(&format!("${}", name.as_str())),
+        }
     }
 }
 
@@ -67,33 +145,18 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let hex = value.strip_prefix('#').filter(|hex| {
-            hex.is_ascii()
-                && matches!(hex.len(), 3 | 6)
-                && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
-        });
-        let Some(hex) = hex else {
-            return Err(serde::de::Error::custom(
-                "sidebar token fg must be #RGB or #RRGGBB",
-            ));
-        };
-        let (r, g, b) = if hex.len() == 3 {
-            let mut digits = hex
-                .bytes()
-                .map(|byte| char::from(byte).to_digit(16).expect("validated hex digit") as u8 * 17);
-            (
-                digits.next().expect("three hex digits"),
-                digits.next().expect("three hex digits"),
-                digits.next().expect("three hex digits"),
-            )
-        } else {
-            (
-                u8::from_str_radix(&hex[0..2], 16).expect("validated hex digits"),
-                u8::from_str_radix(&hex[2..4], 16).expect("validated hex digits"),
-                u8::from_str_radix(&hex[4..6], 16).expect("validated hex digits"),
-            )
-        };
-        Ok(Self { r, g, b })
+        if let Some(name) = value.strip_prefix('$') {
+            return SidebarColorTokenName::new(name)
+                .map(Self::Token)
+                .ok_or_else(|| {
+                    serde::de::Error::custom(format!(
+                        "invalid custom sidebar token `{value}` in fg"
+                    ))
+                });
+        }
+        Self::parse_hex(&value).ok_or_else(|| {
+            serde::de::Error::custom("sidebar token fg must be #RGB, #RRGGBB or $token")
+        })
     }
 }
 
@@ -102,6 +165,16 @@ pub struct SidebarTokenStyle {
     pub fg: Option<SidebarTokenColor>,
     pub bold: Option<bool>,
     pub dim: Option<bool>,
+}
+
+impl SidebarTokenStyle {
+    /// Resolves a token-reference `fg` against the current item's tokens.
+    pub(crate) fn resolved(self, tokens: &std::collections::HashMap<String, String>) -> Self {
+        Self {
+            fg: self.fg.and_then(|fg| fg.resolve(tokens)),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,9 +213,15 @@ pub enum SpaceSidebarToken {
 }
 
 impl AgentSidebarToken {
-    pub(crate) fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
+    pub(crate) fn style_for_value(
+        &self,
+        value: &str,
+        tokens: &std::collections::HashMap<String, String>,
+    ) -> Option<SidebarTokenStyle> {
         match self {
-            Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
+            Self::Styled { style, rules, .. } => {
+                rules::matching_style(rules, *style, value, tokens)
+            }
             _ => Some(SidebarTokenStyle::default()),
         }
     }
@@ -156,9 +235,15 @@ impl AgentSidebarToken {
 }
 
 impl SpaceSidebarToken {
-    pub(crate) fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
+    pub(crate) fn style_for_value(
+        &self,
+        value: &str,
+        tokens: &std::collections::HashMap<String, String>,
+    ) -> Option<SidebarTokenStyle> {
         match self {
-            Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
+            Self::Styled { style, rules, .. } => {
+                rules::matching_style(rules, *style, value, tokens)
+            }
             _ => Some(SidebarTokenStyle::default()),
         }
     }
@@ -231,12 +316,7 @@ where
             "unknown sidebar token `{value}`; custom tokens must start with `$`"
         ));
     };
-    if name.is_empty()
-        || name.len() > 32
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
+    if !is_valid_custom_token_name(name) {
         return Err(format!("invalid custom sidebar token `{value}`"));
     }
     Ok(T::from(name.to_string()))
@@ -629,13 +709,15 @@ rows = [["state_icon", "tab"], ["focused_tab"], [{ token = "focused_tab", fg = "
         );
         assert_eq!(
             token
-                .style_for_value("logs")
+                .style_for_value("logs", &Default::default())
                 .and_then(|style| style.fg)
                 .map(SidebarTokenColor::ratatui),
             Some(ratatui::style::Color::Rgb(0xff, 0x00, 0x00))
         );
         assert_eq!(
-            token.style_for_value("build").and_then(|style| style.fg),
+            token
+                .style_for_value("build", &Default::default())
+                .and_then(|style| style.fg),
             style.fg
         );
         let encoded = toml::to_string(&config).unwrap();
@@ -758,6 +840,34 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
                 toml::from_str::<crate::config::Config>(&input).is_err(),
                 "accepted key {key:?}"
             );
+        }
+    }
+
+    #[test]
+    fn fg_accepts_token_reference_and_round_trips() {
+        let config: SidebarConfig = toml::from_str(
+            r##"
+[spaces]
+rows = [[{ token = "workspace", fg = "$color", rules = [{ contains = "x", fg = "$other-1" }] }]]
+"##,
+        )
+        .unwrap();
+        let (_, style) = config.spaces.rows[0][0].parts();
+        assert!(matches!(style.fg, Some(SidebarTokenColor::Token(_))));
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains(r#"fg = "$color""#));
+        assert!(encoded.contains(r#"fg = "$other-1""#));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+    }
+
+    #[test]
+    fn fg_rejects_invalid_token_reference() {
+        for fg in ["$", "$bad.name", "$bad name", "red"] {
+            let input =
+                format!("[spaces]\nrows = [[{{ token = \"workspace\", fg = \"{fg}\" }}]]\n");
+            assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{fg}");
+            let rule = format!("[spaces]\nrows = [[{{ token = \"workspace\", rules = [{{ equals = \"a\", fg = \"{fg}\" }}] }}]]\n");
+            assert!(toml::from_str::<SidebarConfig>(&rule).is_err(), "{fg}");
         }
     }
 }

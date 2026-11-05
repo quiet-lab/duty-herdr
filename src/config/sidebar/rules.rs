@@ -176,7 +176,9 @@ pub(super) fn matching_style(
     rules: &[SidebarTokenRule],
     base: SidebarTokenStyle,
     value: &str,
+    tokens: &std::collections::HashMap<String, String>,
 ) -> Option<SidebarTokenStyle> {
+    let base = base.resolved(tokens);
     let mut numeric = None;
     for rule in rules {
         if rule.matches(value, &mut numeric) {
@@ -184,7 +186,7 @@ pub(super) fn matching_style(
                 return None;
             }
             return Some(SidebarTokenStyle {
-                fg: rule.style.fg.or(base.fg),
+                fg: rule.style.fg.and_then(|fg| fg.resolve(tokens)).or(base.fg),
                 bold: rule.style.bold.or(base.bold),
                 dim: rule.style.dim.or(base.dim),
             });

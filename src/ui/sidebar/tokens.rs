@@ -116,7 +116,9 @@ pub(crate) fn agent_rows(
                     }?;
                     let style = kind
                         .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                        .map_or(Some(style.resolved(context.tokens)), |value| {
+                            configured.style_for_value(value, context.tokens)
+                        })?;
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
@@ -172,7 +174,9 @@ pub(crate) fn space_rows(
                     }?;
                     let style = kind
                         .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                        .map_or(Some(style.resolved(context.tokens)), |value| {
+                            configured.style_for_value(value, context.tokens)
+                        })?;
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
@@ -611,5 +615,72 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 "2 changes".into()
             ))]]
         );
+    }
+
+    fn fg_of(token: &ResolvedToken) -> Option<ratatui::style::Color> {
+        token.style.fg.map(|fg| fg.ratatui())
+    }
+
+    #[test]
+    fn token_reference_fg_takes_color_from_workspace_tokens_in_spaces() {
+        use ratatui::style::Color;
+        let config: SpacesSidebarConfig = toml::from_str(
+            r##"rows = [[{ token = "workspace", fg = "$color" }], [{ token = "workspace", fg = "#00ff00", rules = [{ contains = "x", fg = "$color" }] }]]"##,
+        )
+        .unwrap();
+        let rows = |workspace: &str, value: Option<&str>| {
+            let tokens: std::collections::HashMap<String, String> = value
+                .map(|value| ("color".to_string(), value.to_string()))
+                .into_iter()
+                .collect();
+            space_rows(
+                &config,
+                SpaceTokenContext {
+                    workspace,
+                    branch: None,
+                    state_text: "idle",
+                    ahead_behind: None,
+                    suppress_git_details: false,
+                    tokens: &tokens,
+                },
+            )
+        };
+        let red = Some(Color::Rgb(255, 0, 0));
+        let green = Some(Color::Rgb(0, 255, 0));
+        let rows_red = rows("ax", Some("#ff0000"));
+        assert_eq!(fg_of(&rows_red[0][0]), red);
+        assert_eq!(fg_of(&rows_red[1][0]), red);
+        // Rule does not match: general fg is kept.
+        assert_eq!(fg_of(&rows("repo", Some("#ff0000"))[1][0]), green);
+        for value in [None, Some(""), Some("red")] {
+            let rows = rows("ax", value);
+            assert_eq!(fg_of(&rows[0][0]), None);
+            // Unresolvable rule reference falls back to the general fg.
+            assert_eq!(fg_of(&rows[1][0]), green);
+        }
+    }
+
+    #[test]
+    fn token_reference_fg_takes_color_from_pane_tokens_in_agents() {
+        use ratatui::style::Color;
+        let config: AgentsSidebarConfig = toml::from_str(
+            r##"rows = [[{ token = "workspace", fg = "$color" }], [{ token = "workspace", rules = [{ contains = "x", fg = "$color" }] }]]"##,
+        )
+        .unwrap();
+        let mut entry = entry();
+        entry.workspace = "ax".into();
+        entry.tokens.insert("color".into(), "#ff0000".into());
+        let rows = agent_rows(&config, context(&entry), "working");
+        assert_eq!(fg_of(&rows[0][0]), Some(Color::Rgb(255, 0, 0)));
+        assert_eq!(fg_of(&rows[1][0]), Some(Color::Rgb(255, 0, 0)));
+        for value in [None, Some("red")] {
+            entry.tokens.clear();
+            if let Some(value) = value {
+                entry.tokens.insert("color".into(), value.into());
+            }
+            let rows = agent_rows(&config, context(&entry), "working");
+            assert_eq!(fg_of(&rows[0][0]), None);
+            assert_eq!(fg_of(&rows[1][0]), None);
+        }
     }
 }
