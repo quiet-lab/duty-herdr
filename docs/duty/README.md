@@ -146,7 +146,8 @@ just release-local duty-v0.9.5.1 --install --notes-file заметки.md
 Тег — `duty-v<версия Cargo.toml>`; повторный выпуск той же версии —
 `duty-v<версия Cargo.toml>.N`; иной тег сценарий отклоняет. Сценарий выполняет по порядку:
 
-1. `cargo fmt --check`, `cargo clippy --all-targets`, `cargo test`;
+1. `cargo fmt --check`, `cargo clippy --all-targets`, `just test`
+   (`just check` не годится: требует Windows SDK);
 2. `cargo build --release --locked` с `HERDR_BUILD_ID=<тег>` и
    `HERDR_BUILD_COMMIT=<sha>`;
 3. `latest.json` (поле `build_id` равно тегу, `protocol` из
@@ -155,13 +156,16 @@ just release-local duty-v0.9.5.1 --install --notes-file заметки.md
 4. пакет `duty-herdr-bin` через `makepkg` в `.local/release/<тег>/`;
 5. репозиторий pacman: `repo-add`, `duty-herdr.db` и `duty-herdr.files`
    копиями обычными файлами;
-6. аннотированный тег, push тега и `gh release create` со всеми
-   активами: `herdr-linux-x86_64`, `latest.json`, пакет
+6. `gh release create <тег> --target <sha>` со всеми активами:
+   `herdr-linux-x86_64`, `latest.json`, пакет
    `duty-herdr-bin-<pkgver>-1-x86_64.pkg.tar.zst`, `duty-herdr.db`,
    `duty-herdr.db.tar.gz`, `duty-herdr.files`,
-   `duty-herdr.files.tar.gz`.
+   `duty-herdr.files.tar.gz`; тег в origin создаёт сам `gh`, затем
+   сценарий забирает его командой `git fetch`. При сбое выпуск и тег
+   удаляются, повтор того же тега проходит;
+7. только после успешного выпуска — `--install`.
 
-Ключи: `--install` ставит собранный бинарник в `~/.local/bin/herdr`,
+Ключи: `--install` после успешного выпуска ставит собранный бинарник в `~/.local/bin/herdr`,
 `--dry-run` печатает шаги без сборки и публикации (провал проверок
 становится предупреждением), `--notes-file` задаёт заметки выпуска (без
 него — `git log` от прошлого тега `duty-v*`). Окружение: `ZIG`,
