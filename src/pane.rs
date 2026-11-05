@@ -1523,33 +1523,57 @@ pub struct PaneRuntime {
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
+/// What the test channel reports to a waiting echo-confirmed submission.
+#[cfg(test)]
+enum TestPaneEvent {
+    /// `test_process_pty_bytes` parsed output, standing in for the actor's PTY reads.
+    Output,
+    /// `test_expire_submission_echo` stepped the echo wait past its deadline.
+    ExpireEcho,
+}
+
 /// Mirrors the actor's echo-confirmed submission over the test channel.
+///
+/// The echo deadline is stepped by `TestPaneEvent::ExpireEcho`, not by the clock, so tests
+/// decide when an attempt runs out; `echo.timeout` only guards against a test that never
+/// steps it.
 #[cfg(all(test, unix))]
 fn test_echo_confirmed_submission(
     sender: &mpsc::Sender<Bytes>,
     text: Bytes,
     enter: Bytes,
     mut echo: crate::pty::actor::SubmissionEcho,
-    output: &std::sync::mpsc::Receiver<()>,
+    events: &std::sync::mpsc::Receiver<TestPaneEvent>,
 ) -> std::io::Result<()> {
     let attempts = echo.retries + 1;
-    for _ in 0..attempts {
+    for attempt in 1..=attempts {
         sender
             .try_send(text.clone())
             .map_err(std::io::Error::other)?;
-        let deadline = std::time::Instant::now() + echo.timeout;
         loop {
-            if (echo.probe)() {
+            let copies = (echo.probe)();
+            if attempt > 1 && copies > 1 {
+                return Err(std::io::Error::other(
+                    crate::pty::actor::SubmissionEchoMissing {
+                        attempts: attempt,
+                        doubled: true,
+                    },
+                ));
+            }
+            if copies > 0 {
                 return sender.try_send(enter).map_err(std::io::Error::other);
             }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() || output.recv_timeout(remaining).is_err() {
-                break;
+            match events.recv_timeout(echo.timeout) {
+                Ok(TestPaneEvent::Output) => {}
+                Ok(TestPaneEvent::ExpireEcho) | Err(_) => break,
             }
         }
     }
     Err(std::io::Error::other(
-        crate::pty::actor::SubmissionEchoMissing { attempts },
+        crate::pty::actor::SubmissionEchoMissing {
+            attempts,
+            doubled: false,
+        },
     ))
 }
 
@@ -1559,8 +1583,8 @@ enum PaneRuntimeIo {
     TestChannel {
         sender: mpsc::Sender<Bytes>,
         resize_tx: watch::Sender<(u16, u16, u32, u32)>,
-        /// Signalled by `test_process_pty_bytes`, standing in for the actor's PTY reads.
-        output_watch: Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>,
+        /// Events for the echo-confirmed submission waiting on this channel, if any.
+        output_watch: Arc<Mutex<Option<std::sync::mpsc::Sender<TestPaneEvent>>>>,
     },
 }
 
@@ -3764,7 +3788,8 @@ impl PaneRuntime {
         timeout: std::time::Duration,
         retries: u8,
     ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
-        let probe = input_echo::echo_probe(self.terminal.clone(), echo_text);
+        let probe =
+            input_echo::echo_probe(self.terminal.clone(), self.content_seq.clone(), echo_text);
         self.io.queue_echo_confirmed_submission(
             text,
             enter,
@@ -4117,16 +4142,27 @@ impl PaneRuntime {
         let result = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
         self.content_seq.fetch_add(1, Ordering::Release);
         self.compression.wake();
+        self.test_send_pane_event(TestPaneEvent::Output);
+        result.terminal_responses
+    }
+
+    /// Ends the current attempt of an echo-confirmed submission on the test channel as if
+    /// its deadline had passed.
+    #[cfg(unix)]
+    pub(crate) fn test_expire_submission_echo(&self) {
+        self.test_send_pane_event(TestPaneEvent::ExpireEcho);
+    }
+
+    fn test_send_pane_event(&self, event: TestPaneEvent) {
         if let PaneRuntimeIo::TestChannel { output_watch, .. } = &self.io {
-            if let Some(output) = output_watch
+            if let Some(events) = output_watch
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .as_ref()
             {
-                let _ = output.send(());
+                let _ = events.send(event);
             }
         }
-        result.terminal_responses
     }
 
     pub(crate) fn test_with_scrollback_bytes(

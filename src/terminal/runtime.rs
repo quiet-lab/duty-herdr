@@ -675,6 +675,11 @@ impl TerminalRuntime {
         self.0.test_process_pty_bytes(bytes)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn test_expire_submission_echo(&self) {
+        self.0.test_expire_submission_echo();
+    }
+
     pub(crate) fn test_with_scrollback_bytes(
         cols: u16,
         rows: u16,
