@@ -482,6 +482,20 @@ impl TerminalRuntime {
         self.0.validate_input_submission(bytes)
     }
 
+    #[cfg(unix)]
+    pub fn queue_echo_confirmed_submission(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        echo_text: &str,
+        timeout: std::time::Duration,
+        retries: u8,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        self.0
+            .queue_echo_confirmed_submission(text, enter, echo_text, timeout, retries)
+    }
+
+    #[cfg(windows)]
     pub fn queue_user_input_submission(
         &self,
         text: Bytes,

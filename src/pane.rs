@@ -28,6 +28,8 @@ mod agent_detection;
 mod background_agent;
 mod cursor;
 mod input;
+#[cfg(unix)]
+mod input_echo;
 mod kitty_keyboard;
 mod osc;
 mod state;
@@ -1521,12 +1523,44 @@ pub struct PaneRuntime {
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
+/// Mirrors the actor's echo-confirmed submission over the test channel.
+#[cfg(all(test, unix))]
+fn test_echo_confirmed_submission(
+    sender: &mpsc::Sender<Bytes>,
+    text: Bytes,
+    enter: Bytes,
+    mut echo: crate::pty::actor::SubmissionEcho,
+    output: &std::sync::mpsc::Receiver<()>,
+) -> std::io::Result<()> {
+    let attempts = echo.retries + 1;
+    for _ in 0..attempts {
+        sender
+            .try_send(text.clone())
+            .map_err(std::io::Error::other)?;
+        let deadline = std::time::Instant::now() + echo.timeout;
+        loop {
+            if (echo.probe)() {
+                return sender.try_send(enter).map_err(std::io::Error::other);
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() || output.recv_timeout(remaining).is_err() {
+                break;
+            }
+        }
+    }
+    Err(std::io::Error::other(
+        crate::pty::actor::SubmissionEchoMissing { attempts },
+    ))
+}
+
 enum PaneRuntimeIo {
     Actor(PtyIoActorHandle),
     #[cfg(test)]
     TestChannel {
         sender: mpsc::Sender<Bytes>,
         resize_tx: watch::Sender<(u16, u16, u32, u32)>,
+        /// Signalled by `test_process_pty_bytes`, standing in for the actor's PTY reads.
+        output_watch: Arc<Mutex<Option<std::sync::mpsc::Sender<()>>>>,
     },
 }
 
@@ -1654,6 +1688,39 @@ impl PaneRuntimeIo {
         }
     }
 
+    #[cfg(unix)]
+    fn queue_echo_confirmed_submission(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        echo: crate::pty::actor::SubmissionEcho,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        match self {
+            PaneRuntimeIo::Actor(actor) => actor.queue_echo_confirmed_submission(text, enter, echo),
+            #[cfg(test)]
+            PaneRuntimeIo::TestChannel {
+                sender,
+                output_watch,
+                ..
+            } => {
+                let sender = sender.clone();
+                let (output_tx, output_rx) = std::sync::mpsc::channel();
+                *output_watch
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(output_tx);
+                let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = reply_tx.send(test_echo_confirmed_submission(
+                        &sender, text, enter, echo, &output_rx,
+                    ));
+                });
+                Ok(reply_rx)
+            }
+        }
+    }
+
+    // Unix submissions are echo-confirmed; the fixed pause remains only for Windows.
+    #[cfg(windows)]
     fn queue_user_input_submission(
         &self,
         text: Bytes,
@@ -1663,13 +1730,7 @@ impl PaneRuntimeIo {
     ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
         match self {
             PaneRuntimeIo::Actor(actor) => {
-                #[cfg(windows)]
-                return actor.queue_user_input_submission(text, enter, delay, deadline);
-                #[cfg(unix)]
-                {
-                    let _ = deadline;
-                    actor.queue_user_input_submission(text, enter, delay)
-                }
+                actor.queue_user_input_submission(text, enter, delay, deadline)
             }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { sender, .. } => {
@@ -3689,6 +3750,33 @@ impl PaneRuntime {
         }
     }
 
+    /// Writes `text`, then `enter` as soon as `echo_text` newly appears on the pane screen.
+    ///
+    /// An unconfirmed write is repeated `retries` times, each bounded by `timeout`; when no
+    /// attempt is confirmed the submission fails with `SubmissionEchoMissing` and Enter is
+    /// not written.
+    #[cfg(unix)]
+    pub fn queue_echo_confirmed_submission(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        echo_text: &str,
+        timeout: std::time::Duration,
+        retries: u8,
+    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+        let probe = input_echo::echo_probe(self.terminal.clone(), echo_text);
+        self.io.queue_echo_confirmed_submission(
+            text,
+            enter,
+            crate::pty::actor::SubmissionEcho {
+                probe,
+                timeout,
+                retries,
+            },
+        )
+    }
+
+    #[cfg(windows)]
     pub fn queue_user_input_submission(
         &self,
         text: Bytes,
@@ -4029,6 +4117,15 @@ impl PaneRuntime {
         let result = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
         self.content_seq.fetch_add(1, Ordering::Release);
         self.compression.wake();
+        if let PaneRuntimeIo::TestChannel { output_watch, .. } = &self.io {
+            if let Some(output) = output_watch
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+            {
+                let _ = output.send(());
+            }
+        }
         result.terminal_responses
     }
 
@@ -4068,6 +4165,7 @@ impl PaneRuntime {
                 io: PaneRuntimeIo::TestChannel {
                     sender: tx,
                     resize_tx,
+                    output_watch: Arc::default(),
                 },
                 current_size: Cell::new((rows, cols, 0, 0)),
                 child_pid: Arc::new(AtomicU32::new(0)),
@@ -5423,6 +5521,7 @@ mod tests {
             io: PaneRuntimeIo::TestChannel {
                 sender: tx,
                 resize_tx,
+                output_watch: Arc::default(),
             },
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
@@ -5463,6 +5562,7 @@ mod tests {
             io: PaneRuntimeIo::TestChannel {
                 sender: tx,
                 resize_tx,
+                output_watch: Arc::default(),
             },
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),

@@ -10,7 +10,35 @@ use crate::app::App;
 
 use super::responses::{encode_error, encode_error_body, encode_success};
 
+// Enter follows the prompt text as soon as the text is parsed on the pane screen. Claude Code
+// echoes a pasted prompt into its input line within tens of milliseconds; five seconds keeps a
+// x50 margin for slow hosts and agents still running startup hooks. This bounds one attempt,
+// it is not a pause.
+#[cfg(all(unix, not(test)))]
+const AGENT_PROMPT_ECHO_TIMEOUT: Duration = Duration::from_secs(5);
+// Unit tests echo by hand right after reading the text; one second covers a loaded test host
+// and keeps the no-echo cases short.
+#[cfg(all(unix, test))]
+const AGENT_PROMPT_ECHO_TIMEOUT: Duration = Duration::from_secs(1);
+// An agent that drops input while it starts up gets the text once more before the prompt is
+// reported lost.
+#[cfg(unix)]
+const AGENT_PROMPT_ECHO_RETRIES: u8 = 1;
+// The Windows PTY actor writes from a separate writer thread and has no read-path hook that
+// could confirm the echo, so it keeps the fixed pause between text and Enter.
+#[cfg(windows)]
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
+
+#[cfg(unix)]
+fn is_agent_prompt_lost(err: &std::io::Error) -> bool {
+    err.get_ref()
+        .is_some_and(|inner| inner.is::<crate::pty::actor::SubmissionEchoMissing>())
+}
+
+#[cfg(windows)]
+fn is_agent_prompt_lost(_err: &std::io::Error) -> bool {
+    false
+}
 
 // Codex's Windows input reader does not surface bracketed paste. It detects the prompt as a
 // "paste burst" and, while that burst is buffered, rewrites a following Enter into a newline
@@ -110,6 +138,9 @@ impl App {
                 Ok(Ok(())) => encode_success(id, ResponseResult::AgentPrompted { agent }),
                 Ok(Err(err)) if err.kind() == std::io::ErrorKind::TimedOut => {
                     encode_error(id, "timeout", err.to_string())
+                }
+                Ok(Err(err)) if is_agent_prompt_lost(&err) => {
+                    encode_error(id, "agent_prompt_lost", err.to_string())
                 }
                 Ok(Err(err)) => encode_error(id, "agent_prompt_failed", err.to_string()),
                 Err(_) => encode_error(id, "agent_prompt_failed", "pty actor closed"),
@@ -233,8 +264,6 @@ impl App {
             .wait
             .as_ref()
             .and_then(|wait| wait.submission_deadline);
-        #[cfg(not(windows))]
-        let submit_deadline = None;
         if expected_agent == crate::detect::Agent::GithubCopilot {
             // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
             let focus = match crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained) {
@@ -257,13 +286,22 @@ impl App {
         } else {
             text
         };
-        let completion = runtime
-            .queue_user_input_submission(
-                Bytes::from(text),
-                Bytes::from(enter),
-                AGENT_PROMPT_SUBMIT_DELAY,
-                submit_deadline,
-            )
+        #[cfg(unix)]
+        let queued = runtime.queue_echo_confirmed_submission(
+            Bytes::from(text),
+            Bytes::from(enter),
+            &params.text,
+            AGENT_PROMPT_ECHO_TIMEOUT,
+            AGENT_PROMPT_ECHO_RETRIES,
+        );
+        #[cfg(windows)]
+        let queued = runtime.queue_user_input_submission(
+            Bytes::from(text),
+            Bytes::from(enter),
+            AGENT_PROMPT_SUBMIT_DELAY,
+            submit_deadline,
+        );
+        let completion = queued
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
         Ok((id, agent, completion))
     }
@@ -595,8 +633,38 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    /// Next input written to the test pane, or `None` when nothing arrives in time.
+    async fn next_pane_input(rx: &mut tokio::sync::mpsc::Receiver<Bytes>) -> Option<Bytes> {
+        tokio::time::timeout(AGENT_PROMPT_ECHO_TIMEOUT * 3, rx.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[cfg(unix)]
+    fn echo_on_pane(app: &App, pane_id: crate::layout::PaneId, text: &[u8]) {
+        app.lookup_runtime_sender(0, pane_id)
+            .unwrap()
+            .test_process_pty_bytes(text);
+    }
+
+    #[cfg(unix)]
+    fn prompted_agent_test_app(agent: Agent) -> (App, crate::layout::PaneId) {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(agent), AgentState::Idle);
+        (app, pane_id)
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
-    async fn agent_prompt_sends_text_then_delays_enter() {
+    async fn agent_prompt_sends_enter_once_text_is_echoed() {
         let mut app = app_with_agent();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -613,7 +681,6 @@ mod tests {
         app.state.insert_test_runtime(pane_id, runtime);
 
         let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
-        let bracketed_started = std::time::Instant::now();
         let response_rx = start_deferred_agent_prompt(
             &mut app,
             "req",
@@ -623,27 +690,28 @@ mod tests {
                 wait: None,
             },
         );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"\x1b[200~A != B\x1b[201~"))
+        );
+        assert!(rx.try_recv().is_err(), "Enter must wait for the echo");
         assert!(response_rx.try_recv().is_err());
+        echo_on_pane(&app, pane_id, b"> A != B");
         let response = response_rx
             .recv_timeout(Duration::from_secs(1))
-            .expect("agent prompt responds after submission");
+            .expect("agent prompt responds after the echo");
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         let ResponseResult::AgentPrompted { agent, .. } = success.result else {
             panic!("expected prompted response");
         };
         assert_eq!(agent.name.as_deref(), Some("reviewer"));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
-        );
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
-        assert!(bracketed_started.elapsed() >= AGENT_PROMPT_SUBMIT_DELAY);
+        assert!(rx.try_recv().is_err());
 
-        app.lookup_runtime_sender(0, pane_id)
-            .unwrap()
-            .test_process_pty_bytes(b"\x1b[?2004l");
-        let raw_started = std::time::Instant::now();
-        let raw = run_deferred_agent_prompt(
+        // Without bracketed paste the raw text goes out; an echo that is already on screen
+        // from the previous prompt does not confirm the new one.
+        echo_on_pane(&app, pane_id, b"\x1b[?2004l\r\n");
+        let raw_rx = start_deferred_agent_prompt(
             &mut app,
             "req-raw",
             AgentPromptParams {
@@ -652,11 +720,17 @@ mod tests {
                 wait: None,
             },
         );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"A != B"))
+        );
+        echo_on_pane(&app, pane_id, b"> A != B");
+        let raw = raw_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("raw prompt responds after the echo");
         let raw: SuccessResponse = serde_json::from_str(&raw).unwrap();
         assert!(matches!(raw.result, ResponseResult::AgentPrompted { .. }));
-        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"A != B"));
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
-        assert!(raw_started.elapsed() >= AGENT_PROMPT_SUBMIT_DELAY);
 
         let rejected = run_deferred_agent_prompt(
             &mut app,
@@ -670,6 +744,80 @@ mod tests {
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_prompt_repeats_unechoed_text_once() {
+        let (mut app, pane_id) = prompted_agent_test_app(Agent::Claude);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let text = "please review the branch and report every finding";
+
+        let response_rx = start_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: text.into(),
+                wait: None,
+            },
+        );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from(text.as_bytes().to_vec()))
+        );
+        // The agent dropped the first write; the same text is written once more.
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from(text.as_bytes().to_vec()))
+        );
+        // The input line wraps the echo at the pane width.
+        echo_on_pane(
+            &app,
+            pane_id,
+            b"> please review the branch and\r\n  report every finding",
+        );
+        let response = response_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("agent prompt responds after the retried echo");
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn agent_prompt_reports_lost_text_without_enter() {
+        let (mut app, pane_id) = prompted_agent_test_app(Agent::Claude);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response_rx = start_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "never shown".into(),
+                wait: None,
+            },
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                next_pane_input(&mut rx).await,
+                Some(Bytes::from_static(b"never shown"))
+            );
+        }
+        let response = response_rx
+            .recv_timeout(AGENT_PROMPT_ECHO_TIMEOUT * 4)
+            .expect("agent prompt reports the lost text");
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "agent_prompt_lost");
+        assert!(rx.try_recv().is_err(), "a lost prompt must not send Enter");
     }
 
     #[tokio::test]
@@ -698,7 +846,7 @@ mod tests {
 
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "agent_prompt_failed");
-        std::thread::sleep(AGENT_PROMPT_SUBMIT_DELAY * 2);
+        std::thread::sleep(Duration::from_millis(600));
         assert!(rx.try_recv().is_err(), "a failed prompt must not be sent");
     }
 
@@ -766,26 +914,17 @@ mod tests {
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(error.error.code, "agent_blocked");
         assert!(
-            tokio::time::timeout(
-                AGENT_PROMPT_SUBMIT_DELAY + Duration::from_millis(100),
-                rx.recv()
-            )
-            .await
-            .is_err(),
+            tokio::time::timeout(Duration::from_millis(400), rx.recv())
+                .await
+                .is_err(),
             "blocked prompt wrote or scheduled terminal input"
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn agent_prompt_focuses_copilot_before_submitting() {
-        let mut app = app_with_agent();
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
-        terminal.set_agent_name("reviewer".into());
-        terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
+        let (mut app, pane_id) = prompted_agent_test_app(Agent::GithubCopilot);
         let (runtime, mut rx) =
             crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
                 80, 24, 0, b"", 3,
@@ -793,7 +932,7 @@ mod tests {
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.state.insert_test_runtime(pane_id, runtime);
 
-        let response = run_deferred_agent_prompt(
+        let response_rx = start_deferred_agent_prompt(
             &mut app,
             "req",
             AgentPromptParams {
@@ -802,16 +941,23 @@ mod tests {
                 wait: None,
             },
         );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"\x1b[I"))
+        );
+        assert_eq!(
+            next_pane_input(&mut rx).await,
+            Some(Bytes::from_static(b"\x1b[200~A != B\x1b[201~"))
+        );
+        echo_on_pane(&app, pane_id, b"> A != B");
+        let response = response_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("agent prompt responds after the echo");
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert!(matches!(
             success.result,
             ResponseResult::AgentPrompted { .. }
         ));
-        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\x1b[I"));
-        assert_eq!(
-            rx.try_recv().unwrap(),
-            Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
-        );
         assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
     }
 

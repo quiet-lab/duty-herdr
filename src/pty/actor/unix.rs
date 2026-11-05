@@ -77,9 +77,40 @@ enum PtyIoDataCommand {
         text: Bytes,
         enter: Bytes,
         delay: Duration,
+        echo: Option<SubmissionEcho>,
         reply: std_mpsc::Sender<std::io::Result<()>>,
     },
 }
+
+/// Confirms on screen that submitted text reached the program before Enter is written.
+///
+/// The probe runs on the actor thread right after a PTY read has been parsed into the
+/// terminal, so the wait is driven by child output, not by a clock. `timeout` only bounds
+/// how long one write may stay unconfirmed; it never delays a confirmed submission.
+pub(crate) struct SubmissionEcho {
+    pub(crate) probe: Box<dyn FnMut() -> bool + Send + 'static>,
+    pub(crate) timeout: Duration,
+    /// How many times the text is written again after an unconfirmed attempt.
+    pub(crate) retries: u8,
+}
+
+/// Error payload for a submission whose text never appeared on screen.
+#[derive(Debug)]
+pub(crate) struct SubmissionEchoMissing {
+    pub(crate) attempts: u8,
+}
+
+impl std::fmt::Display for SubmissionEchoMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "submitted text did not appear on screen after {} attempt(s); Enter was not sent",
+            self.attempts
+        )
+    }
+}
+
+impl std::error::Error for SubmissionEchoMissing {}
 
 enum PtyIoControlCommand {
     BeginHandoff(std_mpsc::Sender<std::io::Result<()>>),
@@ -145,11 +176,34 @@ impl PtyIoActorHandle {
         }
     }
 
+    /// Writes `text`, waits `delay`, then writes `enter`. Agent prompts use the echo-confirmed
+    /// variant; the fixed pause stays covered by the actor tests.
+    #[cfg(test)]
     pub(crate) fn queue_user_input_submission(
         &self,
         text: Bytes,
         enter: Bytes,
         delay: Duration,
+    ) -> std::io::Result<std_mpsc::Receiver<std::io::Result<()>>> {
+        self.queue_submission(text, enter, delay, None)
+    }
+
+    /// Writes `text`, then writes `enter` as soon as `echo` confirms the text on screen.
+    pub(crate) fn queue_echo_confirmed_submission(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        echo: SubmissionEcho,
+    ) -> std::io::Result<std_mpsc::Receiver<std::io::Result<()>>> {
+        self.queue_submission(text, enter, Duration::ZERO, Some(echo))
+    }
+
+    fn queue_submission(
+        &self,
+        text: Bytes,
+        enter: Bytes,
+        delay: Duration,
+        echo: Option<SubmissionEcho>,
     ) -> std::io::Result<std_mpsc::Receiver<std::io::Result<()>>> {
         let user_writes = self
             .user_writes
@@ -167,6 +221,7 @@ impl PtyIoActorHandle {
                 text,
                 enter,
                 delay,
+                echo,
                 reply: reply_tx,
             })
             .map_err(|err| match err {
@@ -466,8 +521,11 @@ struct PtyIoActorRunner {
 }
 
 struct ActiveSubmission {
+    text: Bytes,
     enter: Bytes,
     delay: Duration,
+    echo: Option<SubmissionEcho>,
+    attempts: u8,
     phase: SubmissionPhase,
     reply: std_mpsc::Sender<std::io::Result<()>>,
 }
@@ -487,6 +545,8 @@ enum SubmissionBoundary {
 enum SubmissionPhase {
     WritingText,
     WaitingUntil(Instant),
+    /// Text is written; Enter waits for the echo probe, bounded by this deadline.
+    AwaitingEcho(Instant),
     WritingEnter,
 }
 
@@ -558,6 +618,9 @@ impl PtyIoActorRunner {
                         && !self.read_once()
                     {
                         break;
+                    }
+                    if readiness.pty_read_ready {
+                        self.observe_submission_echo();
                     }
                     if readiness.pty_write_ready && !self.pending_writes.is_empty() {
                         match self.flush_pending_writes_once() {
@@ -652,18 +715,24 @@ impl PtyIoActorRunner {
                 text,
                 enter,
                 delay,
+                echo,
                 reply,
             } => {
                 if self.state == ActorState::Running {
                     let phase = if text.is_empty() {
                         SubmissionPhase::WaitingUntil(Instant::now() + delay)
                     } else {
-                        self.enqueue_submission_write(text, SubmissionBoundary::Text);
+                        self.enqueue_submission_write(text.clone(), SubmissionBoundary::Text);
                         SubmissionPhase::WritingText
                     };
+                    // Empty text has nothing to confirm on screen.
+                    let echo = echo.filter(|_| !text.is_empty());
                     self.active_submission = Some(ActiveSubmission {
+                        text,
                         enter,
                         delay,
+                        echo,
+                        attempts: 1,
                         phase,
                         reply,
                     });
@@ -871,7 +940,14 @@ impl PtyIoActorRunner {
                     return;
                 };
                 debug_assert!(matches!(submission.phase, SubmissionPhase::WritingText));
-                submission.phase = SubmissionPhase::WaitingUntil(Instant::now() + submission.delay);
+                if let Some(timeout) = submission.echo.as_ref().map(|echo| echo.timeout) {
+                    submission.phase = SubmissionPhase::AwaitingEcho(Instant::now() + timeout);
+                    // The echo may already have been parsed while the write was draining.
+                    self.observe_submission_echo();
+                } else {
+                    submission.phase =
+                        SubmissionPhase::WaitingUntil(Instant::now() + submission.delay);
+                }
             }
             SubmissionBoundary::Enter => {
                 let Some(submission) = self.active_submission.take() else {
@@ -883,30 +959,95 @@ impl PtyIoActorRunner {
         }
     }
 
-    fn schedule_submission_enter(&mut self) {
-        let Some(ActiveSubmission {
-            enter,
-            phase: SubmissionPhase::WaitingUntil(deadline),
-            ..
-        }) = self.active_submission.as_ref()
-        else {
+    /// Writes Enter once the echo probe sees the submitted text on screen.
+    fn observe_submission_echo(&mut self) {
+        let Some(submission) = self.active_submission.as_mut() else {
             return;
         };
-        if Instant::now() >= *deadline {
-            let enter = enter.clone();
-            if enter.is_empty() {
-                let submission = self.active_submission.take().unwrap();
+        if !matches!(submission.phase, SubmissionPhase::AwaitingEcho(_)) {
+            return;
+        }
+        let Some(echo) = submission.echo.as_mut() else {
+            return;
+        };
+        if (echo.probe)() {
+            self.start_submission_enter();
+        }
+    }
+
+    fn start_submission_enter(&mut self) {
+        let Some(submission) = self.active_submission.as_mut() else {
+            return;
+        };
+        if submission.enter.is_empty() {
+            if let Some(submission) = self.active_submission.take() {
                 let _ = submission.reply.send(Ok(()));
-            } else {
-                self.active_submission.as_mut().unwrap().phase = SubmissionPhase::WritingEnter;
-                self.enqueue_submission_write(enter, SubmissionBoundary::Enter);
             }
+        } else {
+            let enter = submission.enter.clone();
+            submission.phase = SubmissionPhase::WritingEnter;
+            self.enqueue_submission_write(enter, SubmissionBoundary::Enter);
+        }
+    }
+
+    /// Handles an echo deadline: writes the text once more while retries remain, otherwise
+    /// fails the submission without Enter. A late echo of an earlier attempt cannot be told
+    /// apart from the retried one, so a slow program may show the text twice; Enter is still
+    /// withheld when no attempt is confirmed in time.
+    fn expire_submission_echo(&mut self) {
+        let Some(submission) = self.active_submission.as_mut() else {
+            return;
+        };
+        let retries = submission.echo.as_ref().map_or(0, |echo| echo.retries);
+        if submission.attempts <= retries {
+            submission.attempts += 1;
+            submission.phase = SubmissionPhase::WritingText;
+            let text = submission.text.clone();
+            debug!(
+                pane = self.pane_id,
+                attempt = submission.attempts,
+                "submitted text not echoed; writing it again"
+            );
+            self.enqueue_submission_write(text, SubmissionBoundary::Text);
+        } else if let Some(submission) = self.active_submission.take() {
+            warn!(
+                pane = self.pane_id,
+                attempts = submission.attempts,
+                "submitted text never appeared on screen; Enter withheld"
+            );
+            let _ = submission
+                .reply
+                .send(Err(std::io::Error::other(SubmissionEchoMissing {
+                    attempts: submission.attempts,
+                })));
+        }
+    }
+
+    fn schedule_submission_enter(&mut self) {
+        let (deadline, awaiting_echo) = match self.active_submission.as_ref() {
+            Some(ActiveSubmission {
+                phase: SubmissionPhase::WaitingUntil(deadline),
+                ..
+            }) => (*deadline, false),
+            Some(ActiveSubmission {
+                phase: SubmissionPhase::AwaitingEcho(deadline),
+                ..
+            }) => (*deadline, true),
+            _ => return,
+        };
+        if Instant::now() < deadline {
+            return;
+        }
+        if awaiting_echo {
+            self.expire_submission_echo();
+        } else {
+            self.start_submission_enter();
         }
     }
 
     fn poll_timeout_ms(&self) -> i32 {
         let Some(ActiveSubmission {
-            phase: SubmissionPhase::WaitingUntil(deadline),
+            phase: SubmissionPhase::WaitingUntil(deadline) | SubmissionPhase::AwaitingEcho(deadline),
             ..
         }) = self.active_submission.as_ref()
         else {
@@ -1217,6 +1358,85 @@ mod tests {
                 | std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::WriteZero
         ));
+    }
+
+    /// Probe that confirms once the child has written `marker` back to the actor.
+    fn echo_marker_probe(
+        read_rx: std_mpsc::Receiver<Bytes>,
+        marker: &'static [u8],
+    ) -> Box<dyn FnMut() -> bool + Send + 'static> {
+        let mut seen = Vec::new();
+        Box::new(move || {
+            seen.extend(read_rx.try_iter().flat_map(|bytes| bytes.to_vec()));
+            seen.windows(marker.len()).any(|window| window == marker)
+        })
+    }
+
+    #[test]
+    fn actor_writes_enter_when_text_is_echoed() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        let completion = handle
+            .queue_echo_confirmed_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                SubmissionEcho {
+                    probe: echo_marker_probe(read_rx, b"prompt"),
+                    timeout: Duration::from_secs(5),
+                    retries: 1,
+                },
+            )
+            .expect("submission queues");
+        let mut prompt = [0; 6];
+        peer.read_exact(&mut prompt).expect("peer receives prompt");
+        assert_eq!(&prompt, b"prompt");
+        peer.write_all(b"> prompt").expect("peer echoes prompt");
+        let mut enter = [0; 1];
+        peer.read_exact(&mut enter).expect("peer receives enter");
+        assert_eq!(enter, *b"\r");
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("actor reports submission")
+            .expect("echoed submission completes");
+        handle.shutdown();
+    }
+
+    #[test]
+    fn actor_rewrites_unechoed_text_then_reports_it_lost() {
+        let (handle, mut peer, read_rx) = actor_with_socket_pair(false);
+        let completion = handle
+            .queue_echo_confirmed_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                SubmissionEcho {
+                    probe: echo_marker_probe(read_rx, b"prompt"),
+                    timeout: Duration::from_millis(100),
+                    retries: 1,
+                },
+            )
+            .expect("submission queues");
+        let mut prompts = [0; 12];
+        peer.read_exact(&mut prompts)
+            .expect("peer receives the prompt twice");
+        assert_eq!(&prompts, b"promptprompt");
+        // Unrelated output does not confirm the text.
+        peer.write_all(b"hook output").expect("peer writes output");
+        let err = completion
+            .recv_timeout(Duration::from_secs(2))
+            .expect("actor reports submission")
+            .expect_err("unechoed submission fails");
+        let missing = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<SubmissionEchoMissing>())
+            .expect("echo-missing error");
+        assert_eq!(missing.attempts, 2);
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("peer timeout");
+        let mut extra = [0; 1];
+        assert!(
+            peer.read(&mut extra).is_err(),
+            "a lost submission must not write Enter"
+        );
+        handle.shutdown();
     }
 
     #[test]
