@@ -50,6 +50,13 @@ pkgver="${tag#duty-v}"
 pkgrel=1
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+# Версия пакета herdr из Cargo.toml (первая строка version в разделе [package]).
+cargo_version="$(awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version *=/{gsub(/[" ]|version=/,"");sub(/^version=/,"");print;exit}' Cargo.toml)"
+[ -n "$cargo_version" ] || { echo "не найдена version в Cargo.toml" >&2; exit 1; }
+if [ "$tag" != "duty-v$cargo_version" ] && ! [[ "$tag" =~ ^duty-v${cargo_version//./\.}\.[0-9]+$ ]]; then
+    echo "тег $tag не соответствует версии Cargo.toml: нужен duty-v$cargo_version или duty-v$cargo_version.N" >&2
+    exit 2
+fi
 out="$root/.local/release/$tag"
 
 # Шаг, меняющий состояние: при --dry-run только печатается.
@@ -138,9 +145,9 @@ echo "== latest.json"
 protocol="$(sed -n 's/^pub const PROTOCOL_VERSION: u32 = \([0-9]*\);.*/\1/p' src/protocol/wire.rs)"
 [ -n "$protocol" ] || { echo "не найден PROTOCOL_VERSION в src/protocol/wire.rs" >&2; exit 1; }
 if [ "$dry_run" -eq 1 ]; then
-    echo "[dry-run] latest.json: version=$pkgver protocol=$protocol build_id=$tag"
+    echo "[dry-run] latest.json: version=$cargo_version protocol=$protocol build_id=$tag"
 else
-    python3 -I - "$out" "$tag" "$pkgver" "$protocol" "$sha" "$REPO_SLUG" <<'PY'
+    python3 -I - "$out" "$tag" "$cargo_version" "$protocol" "$sha" "$REPO_SLUG" <<'PY'
 import json, sys
 out, tag, version, protocol, sha, slug = sys.argv[1:7]
 with open("distribution/latest.json", encoding="utf-8") as f:
@@ -148,7 +155,7 @@ with open("distribution/latest.json", encoding="utf-8") as f:
 with open(f"{out}/notes.md", encoding="utf-8") as f:
     notes = f.read().strip()
 manifest = {
-    "version": upstream["version"],
+    "version": version,
     "build_id": tag,
     "protocol": int(protocol),
     "endpoint_generation": upstream["endpoint_generation"],
