@@ -23,10 +23,10 @@ use interprocess::local_socket::traits::Stream as _;
 use serde::{Deserialize, Deserializer};
 
 // duty-herdr fork: updates come from the fork's GitHub Releases, not herdr.dev.
-const STABLE_UPDATE_MANIFEST_URL: &str =
+pub(crate) const STABLE_UPDATE_MANIFEST_URL: &str =
     "https://github.com/quiet-lab/duty-herdr/releases/latest/download/latest.json";
 // duty-herdr fork: the fork publishes no preview channel.
-const PREVIEW_CHANNEL_UNAVAILABLE: &str = "preview channel is not published for duty-herdr; run `herdr channel set stable` to update from the fork's GitHub Releases";
+pub(crate) const PREVIEW_CHANNEL_UNAVAILABLE: &str = "preview channel is not published for duty-herdr; run `herdr channel set stable` to update from the fork's GitHub Releases";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
 const HERDR_UPDATE_COMMAND: &str = "herdr update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
