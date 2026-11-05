@@ -433,8 +433,16 @@ fn release_info_from_manifest(
             format!("update manifest asset {asset_key} is missing a SHA-256 checksum")
         })?;
 
+    // duty-herdr fork: a rebuild of the installed Cargo version is named by its build id,
+    // so the notice and the stored notes differ from the running build.
+    let identity = if latest == *current {
+        crate::build_info::format_release_identity(&latest.to_string(), manifest_build_id)
+    } else {
+        latest.to_string()
+    };
+
     Ok(Some(ReleaseInfo {
-        identity: latest.to_string(),
+        identity,
         version: latest,
         channel: UpdateChannel::Stable,
         build_id: manifest_build_id.map(str::to_string),
@@ -4280,7 +4288,8 @@ mod tests {
             .unwrap()
             .expect("same version with a different build id is an update");
         assert_eq!(release.build_id.as_deref(), Some(build_id.as_str()));
-        assert_eq!(release.label(), current.to_string());
+        // The label names the build so the notice does not read "update 0.9.5" on 0.9.5.
+        assert_eq!(release.label(), format!("{current} ({build_id})"));
 
         assert!(
             release_info_from_manifest(&manifest, &current, false, Some(build_id.as_str()))

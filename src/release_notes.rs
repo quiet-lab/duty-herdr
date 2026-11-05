@@ -71,7 +71,7 @@ fn load_stored_from_path(path: &Path) -> Option<StoredReleaseNotes> {
 }
 
 pub fn load_latest() -> Option<ReleaseNotes> {
-    load_latest_from_path(&pending_path(), &crate::build_info::version())
+    load_latest_from_path(&pending_path(), &crate::build_info::release_identity())
 }
 
 fn load_latest_from_path(path: &Path, current_version: &str) -> Option<ReleaseNotes> {
@@ -88,11 +88,20 @@ fn release_notes_from_stored(
         return None;
     }
 
+    // Versions are release identities (`build_info::release_identity`): notes for a
+    // rebuild of the running Cargo version with another build id are still pending.
+    let (stored_base, stored_build) = crate::build_info::split_release_identity(&stored.version);
+    let (current_base, current_build) = crate::build_info::split_release_identity(current_version);
     let preview = match (
-        crate::update::Version::parse(&stored.version),
-        crate::update::Version::parse(current_version),
+        crate::update::Version::parse(stored_base),
+        crate::update::Version::parse(current_base),
     ) {
-        (Some(stored_version), Some(current_version)) => stored_version > current_version,
+        (Some(stored_version), Some(current_version)) => {
+            stored_version > current_version
+                || (stored_version == current_version
+                    && stored_build.is_some()
+                    && stored_build != current_build)
+        }
         _ => false,
     };
 
@@ -104,18 +113,26 @@ fn release_notes_from_stored(
 }
 
 pub fn mark_current_version_seen() -> std::io::Result<()> {
-    mark_current_version_seen_at(&pending_path(), &crate::build_info::version())
+    mark_current_version_seen_at(&pending_path(), &crate::build_info::release_identity())
 }
 
 fn mark_current_version_seen_at(path: &Path, current_version: &str) -> std::io::Result<()> {
     let Some(mut stored) = load_stored_from_path(path) else {
         return Ok(());
     };
-    if stored.version != current_version || !stored.show_on_startup {
+    if !describes_current_build(&stored.version, current_version) || !stored.show_on_startup {
         return Ok(());
     }
     stored.show_on_startup = false;
     write_stored_to_path(path, &stored)
+}
+
+/// Notes saved without a build id belong to every build of that version; notes saved
+/// with one belong only to that build.
+fn describes_current_build(stored_version: &str, current_version: &str) -> bool {
+    let (stored_base, stored_build) = crate::build_info::split_release_identity(stored_version);
+    let (current_base, current_build) = crate::build_info::split_release_identity(current_version);
+    stored_base == current_base && (stored_build.is_none() || stored_build == current_build)
 }
 
 fn clear_pending_at(path: &Path) -> std::io::Result<()> {
@@ -263,6 +280,69 @@ mod tests {
         .unwrap();
 
         assert!(load_latest_from_path(&path, "0.3.1").is_some());
+
+        clear_pending_at(&path).unwrap();
+    }
+
+    #[test]
+    fn same_version_rebuild_notes_stay_pending_until_installed() {
+        let path = std::env::temp_dir().join(format!(
+            "herdr-release-notes-{}-{}.json",
+            std::process::id(),
+            "rebuild"
+        ));
+        let _ = clear_pending_at(&path);
+        save_pending_to_path(&path, "0.9.5 (duty-v0.9.5.1)", "### Changed\n- One").unwrap();
+
+        // Running the previous build of the same Cargo version: the update survives a restart.
+        let notes = load_latest_from_path(&path, "0.9.5 (duty-v0.9.5)").expect("latest notes");
+        assert_eq!(notes.version, "0.9.5 (duty-v0.9.5.1)");
+        assert!(notes.preview);
+        assert!(
+            load_latest_from_path(&path, "0.9.5")
+                .expect("dev build")
+                .preview
+        );
+
+        // Dismissing notes before the install does not mark them seen.
+        mark_current_version_seen_at(&path, "0.9.5 (duty-v0.9.5)").unwrap();
+        assert!(
+            load_stored_from_path(&path)
+                .expect("stored")
+                .show_on_startup
+        );
+
+        // After the install the notes are current and can be marked seen.
+        let installed = load_latest_from_path(&path, "0.9.5 (duty-v0.9.5.1)").expect("installed");
+        assert!(!installed.preview);
+        mark_current_version_seen_at(&path, "0.9.5 (duty-v0.9.5.1)").unwrap();
+        assert!(
+            !load_stored_from_path(&path)
+                .expect("stored")
+                .show_on_startup
+        );
+
+        clear_pending_at(&path).unwrap();
+    }
+
+    #[test]
+    fn version_only_notes_are_current_for_any_build_of_that_version() {
+        let path = std::env::temp_dir().join(format!(
+            "herdr-release-notes-{}-{}.json",
+            std::process::id(),
+            "version-only"
+        ));
+        let _ = clear_pending_at(&path);
+        save_pending_to_path(&path, "0.9.6", "### Changed\n- One").unwrap();
+
+        let notes = load_latest_from_path(&path, "0.9.6 (duty-v0.9.6.1)").expect("latest notes");
+        assert!(!notes.preview);
+        mark_current_version_seen_at(&path, "0.9.6 (duty-v0.9.6.1)").unwrap();
+        assert!(
+            !load_stored_from_path(&path)
+                .expect("stored")
+                .show_on_startup
+        );
 
         clear_pending_at(&path).unwrap();
     }
