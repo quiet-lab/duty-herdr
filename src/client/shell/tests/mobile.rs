@@ -672,3 +672,28 @@ fn mobile_switcher_scroll_close_and_width_transition_clear_mobile_hits() {
     assert!(state.hits.mobile_close.is_empty());
     assert!(state.hits.mobile_targets.is_empty());
 }
+
+#[test]
+fn mobile_header_keeps_a_space_after_a_double_width_status_icon() {
+    let mut projected = snapshot();
+    projected.workspaces[0].agent_status = AgentStatus::Blocked;
+    let mut config = Config::default();
+    config.ui.status_icons.blocked = Some("🔴".into());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(44, 30).expect("mobile header frame");
+    let header = &frame.cells[..usize::from(frame.width)];
+    let line = header
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    let x = header
+        .iter()
+        .position(|cell| cell.symbol == "🔴")
+        .unwrap_or_else(|| panic!("double-width status icon in mobile header: {line}"));
+    // The icon covers cells x and x + 1; a separator space follows before the name.
+    assert_eq!(header[x + 2].symbol, " ", "line: {line}");
+    assert_eq!(header[x + 3].symbol, "c", "line: {line}");
+}
