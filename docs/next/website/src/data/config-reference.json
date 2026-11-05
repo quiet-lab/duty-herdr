@@ -1109,6 +1109,12 @@
           "description": "Time each frame of a status icon with several frames stays on screen, from 100 to 5000 milliseconds."
         },
         {
+          "key": "ui.cursor_shape_by_screen",
+          "type": "table of cursor shape rules",
+          "default": "{}",
+          "description": "Cursor shape rules keyed by strict canonical agent id and matched against the agent's detection screen. Each table holds an optional default shape and ordered rules { contains, shape, bottom_non_empty_lines }; the first rule whose substring is found wins. Without a match and without a default the pane keeps its own cursor shape. Shapes: block, steady_block, underline, steady_underline, bar, steady_bar."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",

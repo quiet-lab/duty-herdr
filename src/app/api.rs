@@ -253,6 +253,7 @@ impl App {
                     .publish_pane_process_exit_if_agent(*pane_id, false)
                 {
                     self.sync_full_lifecycle_authority_detection_pauses();
+                    self.sync_screen_cursor_rules();
                     self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
                     self.emit_pane_state_update(&update);
                 }
@@ -378,6 +379,7 @@ impl App {
             }
         }
         self.sync_full_lifecycle_authority_detection_pauses();
+        self.sync_screen_cursor_rules();
         if terminal_cwd_reported {
             self.request_git_identity_refresh(Instant::now());
             self.render_dirty.request_generic();
@@ -496,6 +498,27 @@ impl App {
                     runtime.set_self_reported_agent_active(terminal.self_reported_agent_active());
                 }
             }
+        }
+    }
+
+    /// Binds each pane to the rules of its effective agent; an exited agent has none.
+    pub(crate) fn sync_screen_cursor_rules(&self) {
+        let render = crate::pane::ScreenCursorRender {
+            dirty: self.render_dirty.clone(),
+            notify: self.render_notify.clone(),
+        };
+        for (terminal_id, terminal) in &self.state.terminals {
+            let Some(runtime) = self.terminal_runtimes.get(terminal_id) else {
+                continue;
+            };
+            let rules = if self.screen_cursor_rules.is_empty() {
+                None
+            } else {
+                terminal
+                    .effective_known_agent()
+                    .and_then(|agent| self.screen_cursor_rules.for_agent(agent))
+            };
+            runtime.sync_screen_cursor_rules(rules, &render);
         }
     }
 
@@ -668,6 +691,7 @@ impl App {
             .state
             .publish_pane_process_exit_if_agent(pane_id, true)?;
         self.sync_full_lifecycle_authority_detection_pauses();
+        self.sync_screen_cursor_rules();
         self.refresh_new_herdr_toast_context_for_update(&update, &previous_toast);
         self.emit_pane_state_update(&update);
         Some(update)

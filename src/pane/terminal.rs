@@ -216,6 +216,8 @@ pub(crate) struct GhosttyPaneCore {
     pub osc_debug_tracker: OscDebugTracker,
     pub agent_osc_state: AgentOscStateTracker,
     decscusr_tracker: DecscusrTracker,
+    /// Shape chosen by the agent's screen rules; wins over the pane's own DECSCUSR.
+    screen_cursor_shape: Option<u8>,
     cursor_settle_state: CursorPositionSettleState,
     windows_powershell_prompt_cwd_reporting: bool,
 }
@@ -481,6 +483,11 @@ impl PaneTerminal {
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
         self.ghostty.cursor_state()
+    }
+
+    /// Returns whether the screen rules' shape changed.
+    pub(crate) fn set_screen_cursor_shape(&self, shape: Option<u8>) -> bool {
+        self.ghostty.set_screen_cursor_shape(shape)
     }
 
     pub fn synchronized_output_active(&self) -> bool {
@@ -1202,6 +1209,7 @@ impl GhosttyPaneTerminal {
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
                 decscusr_tracker: DecscusrTracker::default(),
+                screen_cursor_shape: None,
                 cursor_settle_state: CursorPositionSettleState::default(),
                 windows_powershell_prompt_cwd_reporting: false,
             }),
@@ -2005,6 +2013,15 @@ impl GhosttyPaneTerminal {
         effective_cursor_state(&mut core, current)
     }
 
+    fn set_screen_cursor_shape(&self, shape: Option<u8>) -> bool {
+        let Ok(mut core) = self.core.lock() else {
+            return false;
+        };
+        let changed = core.screen_cursor_shape != shape;
+        core.screen_cursor_shape = shape;
+        changed
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.core
             .lock()
@@ -2372,6 +2389,7 @@ impl GhosttyPaneTerminal {
             terminal,
             render_state,
             decscusr_tracker,
+            screen_cursor_shape,
             ..
         } = &mut *core;
         if render_state.update(terminal).is_err() {
@@ -2461,7 +2479,8 @@ impl GhosttyPaneTerminal {
 
         ghostty_clear_render_dirty(render_state, area.height);
 
-        let current_cursor = cursor_state_from_render_state(render_state, decscusr_tracker);
+        let current_cursor =
+            cursor_state_from_render_state(render_state, decscusr_tracker, *screen_cursor_shape);
         if show_cursor {
             if let Some(cursor) =
                 effective_cursor_state(&mut core, current_cursor).filter(|cursor| cursor.visible)
@@ -2569,23 +2588,27 @@ fn current_cursor_state(core: &mut GhosttyPaneCore) -> Option<TerminalCursorStat
         terminal,
         render_state,
         decscusr_tracker,
+        screen_cursor_shape,
         ..
     } = core;
     render_state.update(terminal).ok()?;
-    cursor_state_from_render_state(render_state, decscusr_tracker)
+    cursor_state_from_render_state(render_state, decscusr_tracker, *screen_cursor_shape)
 }
 
 fn cursor_state_from_render_state(
     render_state: &mut crate::ghostty::RenderState,
     decscusr_tracker: &DecscusrTracker,
+    screen_cursor_shape: Option<u8>,
 ) -> Option<TerminalCursorState> {
     let cursor = render_state.cursor().ok()?;
     let viewport = cursor.viewport?;
-    let shape = if decscusr_tracker.cursor_shape_overridden() {
-        decscusr_cursor_shape(cursor.visual_style, cursor.blinking)
-    } else {
-        0
-    };
+    let shape = screen_cursor_shape.unwrap_or_else(|| {
+        if decscusr_tracker.cursor_shape_overridden() {
+            decscusr_cursor_shape(cursor.visual_style, cursor.blinking)
+        } else {
+            0
+        }
+    });
     Some(TerminalCursorState {
         x: viewport.x,
         y: viewport.y,

@@ -253,6 +253,14 @@ impl TerminalRuntime {
         self.0.set_self_reported_agent_active(active);
     }
 
+    pub(crate) fn sync_screen_cursor_rules(
+        &self,
+        rules: Option<std::sync::Arc<crate::config::ScreenCursorShapeConfig>>,
+        render: &crate::pane::ScreenCursorRender,
+    ) {
+        self.0.sync_screen_cursor_rules(rules, render);
+    }
+
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         self.0.resize(rows, cols, cell_width_px, cell_height_px);
     }
@@ -669,6 +677,10 @@ impl TerminalRuntime {
         Self(crate::pane::PaneRuntime::test_with_screen_bytes(
             cols, rows, bytes,
         ))
+    }
+
+    pub(crate) fn test_evaluate_screen_cursor(&self, render: &crate::pane::ScreenCursorRender) {
+        self.0.test_evaluate_screen_cursor(render);
     }
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) -> Vec<Bytes> {
