@@ -36,6 +36,9 @@ pub(crate) struct ClientShellConfig {
     pub(super) theme_name: String,
     pub(super) theme_runtime: crate::app::state::ThemeRuntimeConfig,
     pub(super) palette: Palette,
+    /// Host terminal background, when reported; the sidebar shows it where the
+    /// theme keeps the terminal background.
+    pub(super) host_background: Option<crate::terminal_theme::RgbColor>,
     pub(super) keybinds: LiveKeybindConfig,
     pub(super) local_keys: crate::config::KeysConfig,
     pub(super) keybinding_source: ClientShellKeybindingSource,

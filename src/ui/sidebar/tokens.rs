@@ -57,12 +57,16 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) tab: Option<&'a str>,
     pub(crate) focused_tab: Option<&'a str>,
+    /// Whether the agent's tab (token `tab`) is active in its workspace.
+    pub(crate) tab_active: bool,
     pub(crate) pane: Option<&'a str>,
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    /// Tokens for `$name` colors: the pane's tokens over its workspace's tokens.
+    pub(crate) color_tokens: &'a std::collections::HashMap<String, String>,
 }
 
 pub(crate) fn agent_rows(
@@ -114,10 +118,15 @@ pub(crate) fn agent_rows(
                             .map(ResolvedTokenKind::Custom),
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
+                    let active = match token {
+                        AgentSidebarToken::Tab => Some(context.tab_active),
+                        AgentSidebarToken::FocusedTab => Some(true),
+                        _ => None,
+                    };
                     let style = kind
                         .text_value()
-                        .map_or(Some(style.resolved(context.tokens)), |value| {
-                            configured.style_for_value(value, context.tokens)
+                        .map_or(Some(style.resolved(context.color_tokens)), |value| {
+                            configured.style_for_value(value, context.color_tokens, active)
                         })?;
                     Some(ResolvedToken::new(kind, style))
                 })
@@ -191,7 +200,7 @@ pub(crate) fn space_rows(
                     let style = kind
                         .text_value()
                         .map_or(Some(style.resolved(context.tokens)), |value| {
-                            configured.style_for_value(value, context.tokens)
+                            configured.style_for_value(value, context.tokens, None)
                         })?;
                     Some(ResolvedToken::new(kind, style))
                 })
@@ -248,12 +257,14 @@ mod tests {
             workspace: &entry.workspace,
             tab: entry.tab.as_deref(),
             focused_tab: entry.focused_tab.as_deref(),
+            tab_active: false,
             pane: entry.pane.as_deref(),
             agent_label: entry.agent_label.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
+            color_tokens: &entry.tokens,
         }
     }
 
@@ -331,6 +342,10 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 theme,
                 &super::super::Palette::catppuccin(),
                 width,
+                super::super::TokenPaint {
+                    panel_text: Color::Reset,
+                    cursor: false,
+                },
             );
             assert_eq!(spans.len(), 1);
             assert!(super::super::display_width(&spans[0].content) <= width);
@@ -773,5 +788,56 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ]
         );
         assert!(space_rows(&config, context(None, None, None, None)).is_empty());
+    }
+
+    #[test]
+    fn active_rule_follows_tab_activity_and_skips_other_tokens() {
+        use crate::config::SidebarTokenColor;
+        let config: AgentsSidebarConfig = toml::from_str(
+            r##"rows = [[{ token = "tab", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] }, { token = "focused_tab", rules = [{ active = true, bold = true }] }, { token = "workspace", rules = [{ active = true, bold = true }, { active = false, bold = false }] }]]"##,
+        )
+        .unwrap();
+        let mut entry = entry();
+        entry.tab = Some("agent".into());
+        entry.focused_tab = Some("logs".into());
+        entry.tokens.insert("color".into(), "#ff0000".into());
+        let red = Some(SidebarTokenColor::Rgb { r: 255, g: 0, b: 0 });
+        for active in [true, false] {
+            let mut ctx = context(&entry);
+            ctx.tab_active = active;
+            let rows = agent_rows(&config, ctx, "working");
+            let (tab, focused, workspace) = (&rows[0][0], &rows[0][1], &rows[0][2]);
+            if active {
+                assert_eq!(tab.style.fg, red);
+                assert_eq!(tab.style.bg, Some(SidebarTokenColor::Panel));
+            } else {
+                assert_eq!(tab.style.fg, Some(SidebarTokenColor::Panel));
+                assert_eq!(tab.style.bg, red);
+            }
+            // `focused_tab` always shows the active tab of the workspace.
+            assert_eq!(focused.style.bold, Some(true));
+            // Tokens that show no tab never match `active`.
+            assert_eq!(workspace.style.bold, None);
+        }
+        let spaces: SpacesSidebarConfig = toml::from_str(
+            r#"rows = [[{ token = "workspace", rules = [{ active = true, bold = true }, { active = false, bold = false }] }]]"#,
+        )
+        .unwrap();
+        let rows = space_rows(
+            &spaces,
+            SpaceTokenContext {
+                workspace: "repo",
+                branch: None,
+                state_text: "idle",
+                ahead_behind: None,
+                tokens: &entry.tokens,
+                suppress_git_details: false,
+                symbol: None,
+                place: None,
+                app: None,
+                auto_label: None,
+            },
+        );
+        assert_eq!(rows[0][0].style.bold, None);
     }
 }

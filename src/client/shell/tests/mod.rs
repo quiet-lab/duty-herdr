@@ -270,3 +270,4 @@ mod popup_focus_projection;
 mod space_labels;
 mod startup_overlays;
 mod status_frames;
+mod tab_style;

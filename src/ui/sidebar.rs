@@ -13,6 +13,7 @@ pub(crate) use self::tokens::{
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
 use crate::app::AppState;
+use crate::config::SidebarTokenColor;
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
@@ -112,7 +113,9 @@ pub(crate) fn resolved_token_spans(
     custom_style: Style,
     palette: &Palette,
     max_width: usize,
+    paint: TokenPaint,
 ) -> Vec<Span<'static>> {
+    let separator_style = paint.separator(Style::default().fg(palette.overlay0), resolved);
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {
@@ -219,21 +222,21 @@ pub(crate) fn resolved_token_spans(
             let previous = &resolved[visible_indices[position - 1]];
             spans.push(Span::styled(
                 tokens::separator(previous, token),
-                Style::default().fg(palette.overlay0),
+                separator_style,
             ));
         }
         match &token.kind {
             ResolvedTokenKind::StateIcon => spans.push(Span::styled(
                 state_icon.0.to_string(),
-                apply_token_style(state_icon.1, token.style),
+                paint.apply(state_icon.1, token.style),
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(state_text_style, token.style),
+                paint.apply(state_text_style, token.style),
             )),
             ResolvedTokenKind::Workspace(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(workspace_style, token.style),
+                paint.apply(workspace_style, token.style),
             )),
             ResolvedTokenKind::Machine(text)
             | ResolvedTokenKind::Tab(text)
@@ -241,32 +244,32 @@ pub(crate) fn resolved_token_spans(
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(secondary_style, token.style),
+                paint.apply(secondary_style, token.style),
             )),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 if *ahead > 0 {
                     spans.push(Span::styled(
                         format!("↑{ahead}"),
-                        apply_token_style(Style::default().fg(palette.green), token.style),
+                        paint.apply(Style::default().fg(palette.green), token.style),
                     ));
                 }
                 if *ahead > 0 && *behind > 0 {
                     spans.push(Span::styled(
                         " ",
-                        apply_token_style(Style::default(), token.style),
+                        paint.apply(Style::default(), token.style),
                     ));
                 }
                 if *behind > 0 {
                     spans.push(Span::styled(
                         format!("↓{behind}"),
-                        apply_token_style(Style::default().fg(palette.red), token.style),
+                        paint.apply(Style::default().fg(palette.red), token.style),
                     ));
                 }
             }
             ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
                 spans.push(Span::styled(
                     truncate_end(text, budgets[index]),
-                    apply_token_style(custom_style, token.style),
+                    paint.apply(custom_style, token.style),
                 ));
             }
         }
@@ -274,23 +277,85 @@ pub(crate) fn resolved_token_spans(
     spans
 }
 
-fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
-    if let Some(foreground) = patch.fg {
-        style = style.fg(foreground.ratatui());
+/// Color of `$panel` used as a text color: the theme's sidebar background;
+/// when the sidebar keeps the terminal background, the host terminal background
+/// if reported, otherwise the theme's floating-panel background.
+pub(crate) fn panel_text_color(
+    palette: &Palette,
+    host_background: Option<ratatui::style::Color>,
+) -> ratatui::style::Color {
+    if palette.sidebar_bg == ratatui::style::Color::Reset {
+        host_background.unwrap_or(palette.panel_bg)
+    } else {
+        palette.sidebar_bg
     }
-    if let Some(bold) = patch.bold {
-        style = if bold {
-            style.add_modifier(Modifier::BOLD)
-        } else {
-            style.remove_modifier(Modifier::BOLD)
-        };
+}
+
+/// Background that fills a whole row: the first token background that paints.
+/// `$panel` paints nothing, so the row keeps the panel and theme row backgrounds.
+pub(crate) fn row_fill(resolved: &[ResolvedToken]) -> Option<ratatui::style::Color> {
+    resolved
+        .iter()
+        .find_map(|token| token.style.bg)
+        .and_then(painted_background)
+}
+
+fn painted_background(color: SidebarTokenColor) -> Option<ratatui::style::Color> {
+    match color {
+        SidebarTokenColor::Rgb { .. } => Some(color.ratatui()),
+        SidebarTokenColor::Panel | SidebarTokenColor::Token(_) => None,
     }
-    if let Some(dim) = patch.dim {
-        style = if dim {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style.remove_modifier(Modifier::DIM)
-        };
+}
+
+/// How token colors land on cells of one row. Under the navigation cursor the
+/// cursor background wins: token backgrounds are not painted and `$panel` text
+/// takes the token background color so it stays readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TokenPaint {
+    /// Text color of `$panel` (`panel_text_color`).
+    pub(crate) panel_text: ratatui::style::Color,
+    /// The row is under the navigation cursor or dragged.
+    pub(crate) cursor: bool,
+}
+
+impl TokenPaint {
+    fn separator(&self, style: Style, resolved: &[ResolvedToken]) -> Style {
+        match row_fill(resolved) {
+            Some(fill) if !self.cursor => style.bg(fill),
+            _ => style,
+        }
     }
-    style
+
+    fn apply(&self, mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
+        let background = patch.bg.and_then(painted_background);
+        match patch.fg {
+            Some(SidebarTokenColor::Panel) if self.cursor => {
+                if let Some(background) = background {
+                    style = style.fg(background);
+                }
+            }
+            Some(foreground) => {
+                style = style.fg(foreground.ratatui_with_panel(self.panel_text));
+            }
+            None => {}
+        }
+        if let Some(background) = background.filter(|_| !self.cursor) {
+            style = style.bg(background);
+        }
+        if let Some(bold) = patch.bold {
+            style = if bold {
+                style.add_modifier(Modifier::BOLD)
+            } else {
+                style.remove_modifier(Modifier::BOLD)
+            };
+        }
+        if let Some(dim) = patch.dim {
+            style = if dim {
+                style.add_modifier(Modifier::DIM)
+            } else {
+                style.remove_modifier(Modifier::DIM)
+            };
+        }
+        style
+    }
 }

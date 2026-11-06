@@ -351,7 +351,7 @@ pub(crate) fn render_sidebar(
             selected,
             state.selected_workspace_id.is_some(),
             dragged,
-            palette,
+            config,
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -854,13 +854,25 @@ pub(in crate::client::shell) fn render_workspace_rows(
     selected: bool,
     navigating: bool,
     dragged: bool,
-    palette: &Palette,
+    config: &ClientShellConfig,
 ) {
+    let palette = &config.palette;
+    let panel_text = config.sidebar_panel_text();
     let WorkspaceRows { rows, tab_row } = rows;
+    // The navigation cursor and a dragged block keep their background over token fills.
+    let cursor = selected || dragged;
+    let mut filled = Vec::new();
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
             break;
+        }
+        if let Some(fill) = crate::ui::sidebar_row_fill(row).filter(|_| !cursor) {
+            buffer.set_style(
+                Rect::new(area.x, y, area.width, 1),
+                Style::default().bg(fill),
+            );
+            filled.push(y);
         }
         let mut x = area.x;
         if tab_row == Some(row_index) {
@@ -931,6 +943,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             Style::default().fg(palette.overlay1),
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
+            crate::ui::SidebarTokenPaint { panel_text, cursor },
         );
         Paragraph::new(Line::from(spans)).render(
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
@@ -948,7 +961,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         None
     };
     if let Some(background) = background {
-        for y in area.y..area.bottom() {
+        for y in (area.y..area.bottom()).filter(|y| !filled.contains(y)) {
             for x in area.x..area.right() {
                 buffer[(x, y)].set_bg(background);
             }

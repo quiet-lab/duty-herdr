@@ -33,8 +33,8 @@ pub use self::{
     },
     screen_cursor::{ScreenCursorRules, ScreenCursorShapeConfig},
     sidebar::{
-        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
-        SpaceSidebarToken, SpacesSidebarConfig,
+        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenColor,
+        SidebarTokenStyle, SpaceSidebarToken, SpacesSidebarConfig,
     },
     sound::SoundConfig,
     tab_bar::TabBarRightEntryConfig,

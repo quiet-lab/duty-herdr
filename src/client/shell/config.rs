@@ -110,6 +110,15 @@ impl ClientShellState {
 }
 
 impl ClientShellConfig {
+    /// Text color of the `$panel` sidebar color for the current theme and host.
+    pub(super) fn sidebar_panel_text(&self) -> ratatui::style::Color {
+        crate::ui::sidebar_panel_text_color(
+            &self.palette,
+            self.host_background
+                .map(|color| ratatui::style::Color::Rgb(color.r, color.g, color.b)),
+        )
+    }
+
     pub(crate) fn from_config(config: &Config) -> Self {
         let theme_runtime = crate::app::client_theme_runtime_from_config(config);
         Self {
@@ -136,6 +145,7 @@ impl ClientShellConfig {
             theme_name: theme_runtime.manual_name.clone(),
             theme_runtime,
             palette: crate::app::client_palette_from_config(config),
+            host_background: None,
             keybinds: config
                 .live_keybinds_with_diagnostics()
                 .map(|(keybinds, _diagnostics)| keybinds)
@@ -507,7 +517,7 @@ mod tests {
         assert_eq!(shell.agents.row_gap, 2);
         assert_eq!(
             shell.agents.rows[0][0]
-                .style_for_value("Local", &Default::default())
+                .style_for_value("Local", &Default::default(), None)
                 .unwrap()
                 .bold,
             Some(true)
