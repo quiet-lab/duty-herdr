@@ -20,9 +20,9 @@ use support::{
     cleanup_test_base, client_shell_handshake, read_server_message, register_runtime_dir,
     register_spawned_herdr_pid, unregister_spawned_herdr_pid, wait_for_client_shell_bootstrap,
     wait_for_message_variant, wait_for_message_variants, wait_for_socket, wait_until,
-    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, SERVER_MESSAGE_PANE_SURFACE,
-    SERVER_MESSAGE_PANE_SURFACE_PATCH, SERVER_MESSAGE_SEMANTIC_NOTIFICATION,
-    SERVER_MESSAGE_SERVER_SHUTDOWN,
+    CURRENT_ENDPOINT_PROTOCOL_GENERATION as CURRENT_PROTOCOL, SERVER_MESSAGE_ENDPOINT_CONTROL,
+    SERVER_MESSAGE_PANE_SURFACE, SERVER_MESSAGE_PANE_SURFACE_PATCH,
+    SERVER_MESSAGE_SEMANTIC_NOTIFICATION, SERVER_MESSAGE_SERVER_SHUTDOWN,
 };
 
 fn unique_test_dir() -> PathBuf {
@@ -168,8 +168,45 @@ fn spawn_server_with_config(
     config_home: &PathBuf,
     runtime_dir: &PathBuf,
     api_socket_path: &PathBuf,
+    client_socket_path: &PathBuf,
+    config: &str,
+) -> SpawnedHerdr {
+    spawn_server_with_config_and_home(
+        config_home,
+        runtime_dir,
+        api_socket_path,
+        client_socket_path,
+        config,
+        None,
+    )
+}
+
+/// A server whose `HOME` is `home`: a workspace in `home/<name>` then shows the
+/// place `~/<name>`, a short label visible in an 80-column client.
+fn spawn_server_with_home(
+    config_home: &PathBuf,
+    runtime_dir: &PathBuf,
+    api_socket_path: &PathBuf,
+    client_socket_path: &PathBuf,
+    home: &std::path::Path,
+) -> SpawnedHerdr {
+    spawn_server_with_config_and_home(
+        config_home,
+        runtime_dir,
+        api_socket_path,
+        client_socket_path,
+        "onboarding = false\n",
+        Some(home),
+    )
+}
+
+fn spawn_server_with_config_and_home(
+    config_home: &PathBuf,
+    runtime_dir: &PathBuf,
+    api_socket_path: &PathBuf,
     _client_socket_path: &PathBuf,
     config: &str,
+    home: Option<&std::path::Path>,
 ) -> SpawnedHerdr {
     fs::create_dir_all(config_home.join(app_dir_name())).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
@@ -194,6 +231,9 @@ fn spawn_server_with_config(
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
+    if let Some(home) = home {
+        cmd.env("HOME", home);
+    }
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
@@ -1005,15 +1045,29 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let remote_runtime = base.join("remote-runtime");
     let remote_api = remote_runtime.join("herdr.sock");
     let remote_client = remote_runtime.join("herdr-client.sock");
-    let mut remote_server =
-        spawn_server(&remote_config, &remote_runtime, &remote_api, &remote_client);
+    // Without an agent a workspace shows its place, not its manual label; each
+    // workspace below lives in `home/<label>` so the place `~/<label>` names it.
+    let home = base.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let workspace_cwd = |label: &str| {
+        let cwd = home.join(label);
+        fs::create_dir_all(&cwd).unwrap();
+        cwd
+    };
+    let mut remote_server = spawn_server_with_home(
+        &remote_config,
+        &remote_runtime,
+        &remote_api,
+        &remote_client,
+        &home,
+    );
     wait_for_socket(&remote_api, Duration::from_secs(10));
     wait_for_socket(&remote_client, Duration::from_secs(10));
     let created = send_json_request(
         &remote_api,
         &serde_json::json!({
             "id": "remote-workspace", "method": "workspace.create",
-            "params": {"cwd": base, "focus": true, "label": "remote-ready"},
+            "params": {"cwd": workspace_cwd("remote-ready"), "focus": true, "label": "remote-ready"},
         })
         .to_string(),
     );
@@ -1120,13 +1174,19 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         );
     }
 
-    let mut local = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    let mut local = spawn_server_with_home(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        &home,
+    );
     wait_for_socket(&api_socket, Duration::from_secs(10));
     let created = send_json_request(
         &api_socket,
         &serde_json::json!({
             "id": "local-workspace", "method": "workspace.create",
-            "params": {"cwd": base, "focus": true, "label": "local-online"},
+            "params": {"cwd": workspace_cwd("local-online"), "focus": true, "label": "local-online"},
         })
         .to_string(),
     );
@@ -1155,13 +1215,19 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     );
     assert!(client.child.try_wait().unwrap().is_none());
 
-    let restarted = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    let restarted = spawn_server_with_home(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        &home,
+    );
     wait_for_socket(&api_socket, Duration::from_secs(10));
     let created = send_json_request(
         &api_socket,
         &serde_json::json!({
             "id": "local-returned", "method": "workspace.create",
-            "params": {"cwd": base, "focus": true, "label": "local-returned"},
+            "params": {"cwd": workspace_cwd("local-returned"), "focus": true, "label": "local-returned"},
         })
         .to_string(),
     );
@@ -1412,12 +1478,13 @@ fn captured_window_titles(output: &SharedOutput) -> Vec<String> {
         .collect()
 }
 
-fn wait_for_window_title(output: &SharedOutput, expected_suffix: &str) -> String {
+/// Waits for a title ending in `expected_suffix` that also contains `part`.
+fn wait_for_window_title_with(output: &SharedOutput, expected_suffix: &str, part: &str) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(title) = captured_window_titles(output)
             .into_iter()
-            .find(|title| title.ends_with(expected_suffix))
+            .find(|title| title.ends_with(expected_suffix) && title.contains(part))
         {
             return title;
         }
@@ -1521,7 +1588,11 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         assert!(response.get("result").is_some(), "{response}");
     }
 
-    let renamed = wait_for_window_title(&output, "|W=space-a|T=tab-a|P=pane-a|O=");
+    // Without an agent in the tab the tab token shows the tab's place (its
+    // root pane cwd outside Git) and app, not the manual label `tab-a`.
+    let first_place = format!("|W=space-a|T={}", base.display());
+    let renamed = wait_for_window_title_with(&output, "|P=pane-a|O=", &first_place);
+    assert!(!renamed.contains("T=tab-a"), "{renamed}");
     assert!(renamed.starts_with("H="));
     assert!(
         !renamed.starts_with("H=|"),
@@ -1529,14 +1600,17 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
     );
 
     send_pane_shell_command(&api_socket, &pane_id, r"printf '\033]0;building\007'");
-    wait_for_window_title(&output, "|W=space-a|T=tab-a|P=pane-a|O=building");
+    wait_for_window_title_with(&output, "|P=pane-a|O=building", &first_place);
 
+    let second_cwd = base.join("second");
+    fs::create_dir_all(&second_cwd).unwrap();
+    let second_place = format!("|W=space-a|T={}", second_cwd.display());
     let second_tab = send_json_request(
         &api_socket,
         &serde_json::json!({
             "id": "second-tab",
             "method": "tab.create",
-            "params": {"workspace_id": workspace_id, "focus": true},
+            "params": {"workspace_id": workspace_id, "cwd": second_cwd, "focus": true},
         })
         .to_string(),
     );
@@ -1545,7 +1619,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         .as_str()
         .expect("second pane id")
         .to_string();
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=");
+    wait_for_window_title_with(&output, "|P=|O=", &second_place);
     let titles_before_hidden_update = captured_window_titles(&output).len();
     send_pane_shell_command(&api_socket, &pane_id, r"printf '\033]0;hidden update\007'");
     // Intentionally consume the AppState title through a read-only request
@@ -1556,7 +1630,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         &second_pane_id,
         r"printf '\033]0;foreground marker\007'",
     );
-    wait_for_window_title(&output, "|W=space-a|T=2|P=|O=foreground marker");
+    wait_for_window_title_with(&output, "|P=|O=foreground marker", &second_place);
     assert!(
         captured_window_titles(&output)[titles_before_hidden_update..]
             .iter()
@@ -1574,7 +1648,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         .to_string(),
     );
     assert_eq!(focused["result"]["tab"]["focused"], true, "{focused}");
-    wait_for_window_title(&output, "|W=space-a|T=tab-a|P=pane-a|O=hidden update");
+    wait_for_window_title_with(&output, "|P=pane-a|O=hidden update", &first_place);
 
     drop(server);
     cleanup_spawned_herdr(client, base);
@@ -2023,16 +2097,26 @@ fn graceful_shutdown_sends_server_shutdown_to_client() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    let result = read_server_message(&mut stream);
-    match result {
-        Ok((variant, _payload)) => {
-            assert_eq!(
-                variant, SERVER_MESSAGE_SERVER_SHUTDOWN,
-                "expected ServerShutdown, got variant {variant}"
-            );
-        }
-        Err(e) => {
-            panic!("expected ServerShutdown message before connection close, got error: {e}");
+    // Frames and snapshots queued before the signal (for example the shell's
+    // first prompt) may still precede the notice; the notice must arrive
+    // before the connection closes.
+    loop {
+        match read_server_message(&mut stream) {
+            Ok((variant, _payload)) if variant == SERVER_MESSAGE_SERVER_SHUTDOWN => break,
+            Ok((variant, _payload)) => {
+                assert!(
+                    [
+                        SERVER_MESSAGE_PANE_SURFACE,
+                        SERVER_MESSAGE_PANE_SURFACE_PATCH,
+                        SERVER_MESSAGE_ENDPOINT_CONTROL,
+                    ]
+                    .contains(&variant),
+                    "expected ServerShutdown, got variant {variant}"
+                );
+            }
+            Err(e) => {
+                panic!("expected ServerShutdown message before connection close, got error: {e}");
+            }
         }
     }
 
