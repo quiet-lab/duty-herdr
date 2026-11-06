@@ -132,18 +132,43 @@ pub(crate) fn generate_workspace_id() -> String {
     format!("w{}", encode_public_number(counter as usize))
 }
 
-pub(crate) fn encode_public_number(mut value: usize) -> String {
+pub(crate) fn encode_public_number(value: usize) -> String {
+    let mut encoded = String::new();
+    push_public_number(&mut encoded, value);
+    encoded
+}
+
+/// Appends the readable base-32 handle of `value`; public ids are built
+/// for every pane of every snapshot, so this writes into the caller's
+/// buffer instead of formatting.
+fn push_public_number(out: &mut String, mut value: usize) {
     if value == 0 {
-        return "0".to_string();
+        out.push('0');
+        return;
     }
 
-    let mut encoded = Vec::new();
+    let mut digits = [0u8; PUBLIC_NUMBER_MAX_DIGITS];
+    let mut len = 0;
     while value > 0 {
         let digit = (value - 1) % PUBLIC_ID_ALPHABET.len();
-        encoded.push(PUBLIC_ID_ALPHABET[digit] as char);
+        digits[len] = PUBLIC_ID_ALPHABET[digit];
+        len += 1;
         value = (value - 1) / PUBLIC_ID_ALPHABET.len();
     }
-    encoded.iter().rev().collect()
+    out.extend(digits[..len].iter().rev().map(|digit| *digit as char));
+}
+
+/// Digits of the longest base-32 handle of a `usize`.
+const PUBLIC_NUMBER_MAX_DIGITS: usize = (usize::BITS as usize).div_ceil(5);
+
+fn public_child_id(workspace_id: &str, kind: char, number: usize) -> String {
+    // Workspace id, `:`, kind and the handle.
+    let mut id = String::with_capacity(workspace_id.len() + 2 + PUBLIC_NUMBER_MAX_DIGITS);
+    id.push_str(workspace_id);
+    id.push(':');
+    id.push(kind);
+    push_public_number(&mut id, number);
+    id
 }
 
 pub(crate) fn decode_public_number(value: &str) -> Option<usize> {
@@ -164,11 +189,11 @@ pub(crate) fn public_workspace_number(id: &str) -> Option<usize> {
 }
 
 pub(crate) fn public_pane_id_for_number(workspace_id: &str, pane_number: usize) -> String {
-    format!("{workspace_id}:p{}", encode_public_number(pane_number))
+    public_child_id(workspace_id, 'p', pane_number)
 }
 
 pub(crate) fn public_tab_id_for_number(workspace_id: &str, tab_number: usize) -> String {
-    format!("{workspace_id}:t{}", encode_public_number(tab_number))
+    public_child_id(workspace_id, 't', tab_number)
 }
 
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
@@ -1598,10 +1623,22 @@ mod tests {
         assert_eq!(encode_public_number(32), "0");
         assert_eq!(encode_public_number(33), "11");
 
-        for value in [1, 9, 10, 31, 32, 33, 1024, 1025] {
+        assert_eq!(encode_public_number(1056), "00");
+
+        for value in [1, 9, 10, 31, 32, 33, 1024, 1025, 1056, usize::MAX] {
             let encoded = encode_public_number(value);
             assert_eq!(decode_public_number(&encoded), Some(value));
         }
+    }
+
+    #[test]
+    fn public_child_ids_join_workspace_kind_and_handle() {
+        assert_eq!(public_pane_id_for_number("w1", 1), "w1:p1");
+        assert_eq!(public_tab_id_for_number("wZ", 33), "wZ:t11");
+        assert_eq!(
+            public_tab_id_for_number("w1", usize::MAX),
+            format!("w1:t{}", encode_public_number(usize::MAX))
+        );
     }
 
     #[test]
