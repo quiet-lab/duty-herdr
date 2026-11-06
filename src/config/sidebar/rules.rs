@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{SidebarTokenColor, SidebarTokenStyle};
+use super::{ColorTokens, SidebarTokenColor, SidebarTokenStyle};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawRule", into = "RawRule")]
@@ -198,7 +198,7 @@ pub(super) fn matching_style(
     rules: &[SidebarTokenRule],
     base: SidebarTokenStyle,
     value: &str,
-    tokens: &std::collections::HashMap<String, String>,
+    tokens: ColorTokens<'_>,
     active: Option<bool>,
 ) -> Option<SidebarTokenStyle> {
     let base = base.resolved(tokens);
@@ -311,17 +311,14 @@ mod tests {
             bg: Some(SidebarTokenColor::Rgb { r: 1, g: 2, b: 3 }),
             ..Default::default()
         };
-        let tokens = Default::default();
+        let tokens = ColorTokens::default();
         assert_eq!(
-            matching_style(&rules, base, "x", &tokens, Some(true))
+            matching_style(&rules, base, "x", tokens, Some(true))
                 .unwrap()
                 .bg,
             Some(SidebarTokenColor::Panel)
         );
-        assert_eq!(
-            matching_style(&rules, base, "x", &tokens, Some(false)),
-            None
-        );
-        assert_eq!(matching_style(&rules, base, "x", &tokens, None), Some(base));
+        assert_eq!(matching_style(&rules, base, "x", tokens, Some(false)), None);
+        assert_eq!(matching_style(&rules, base, "x", tokens, None), Some(base));
     }
 }

@@ -115,7 +115,7 @@ pub(crate) fn resolved_token_spans(
     max_width: usize,
     paint: TokenPaint,
 ) -> Vec<Span<'static>> {
-    let separator_style = paint.separator(Style::default().fg(palette.overlay0), resolved);
+    let separator_style = paint.separator(Style::default().fg(palette.overlay0));
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {
@@ -296,8 +296,7 @@ pub(crate) fn panel_text_color(
 pub(crate) fn row_fill(resolved: &[ResolvedToken]) -> Option<ratatui::style::Color> {
     resolved
         .iter()
-        .find_map(|token| token.style.bg)
-        .and_then(painted_background)
+        .find_map(|token| token.style.bg.and_then(painted_background))
 }
 
 fn painted_background(color: SidebarTokenColor) -> Option<ratatui::style::Color> {
@@ -316,11 +315,13 @@ pub(crate) struct TokenPaint {
     pub(crate) panel_text: ratatui::style::Color,
     /// The row is under the navigation cursor or dragged.
     pub(crate) cursor: bool,
+    /// Row fill (`row_fill`) the caller painted; separators take it.
+    pub(crate) fill: Option<ratatui::style::Color>,
 }
 
 impl TokenPaint {
-    fn separator(&self, style: Style, resolved: &[ResolvedToken]) -> Style {
-        match row_fill(resolved) {
+    fn separator(&self, style: Style) -> Style {
+        match self.fill {
             Some(fill) if !self.cursor => style.bg(fill),
             _ => style,
         }

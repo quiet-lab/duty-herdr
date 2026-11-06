@@ -313,15 +313,6 @@ pub(super) fn agent_row(
         .cloned()
         .collect::<HashMap<_, _>>();
     let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    // Colors such as `$color` fall back to the workspace's tokens.
-    let color_tokens = (!workspace.tokens.is_empty()).then(|| {
-        workspace
-            .tokens
-            .iter()
-            .chain(&agent.tokens)
-            .cloned()
-            .collect::<HashMap<_, _>>()
-    });
     let state_text = labels
         .get(status_text(agent.agent_status))
         .map(String::as_str)
@@ -343,7 +334,7 @@ pub(super) fn agent_row(
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
             canonical_agent,
             tokens: &tokens,
-            color_tokens: color_tokens.as_ref().unwrap_or(&tokens),
+            workspace_tokens: &workspace.tokens,
         },
         state_text,
     );
@@ -398,7 +389,8 @@ pub(super) fn render_agent_row(
     };
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
-        let line_style = match crate::ui::sidebar_row_fill(tokens) {
+        let fill = crate::ui::sidebar_row_fill(tokens);
+        let line_style = match fill {
             Some(fill) => row_style.bg(fill),
             None => row_style,
         };
@@ -415,6 +407,7 @@ pub(super) fn render_agent_row(
             crate::ui::SidebarTokenPaint {
                 panel_text: config.sidebar_panel_text(),
                 cursor: false,
+                fill,
             },
         ));
         Paragraph::new(Line::from(spans)).style(line_style).render(

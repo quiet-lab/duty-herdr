@@ -75,6 +75,35 @@ impl SidebarColorTokenName {
     }
 }
 
+/// Metadata tokens that `$name` colors resolve against: the item's own tokens,
+/// then `fallback` (a pane's workspace tokens), looked up without allocating.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ColorTokens<'a> {
+    pub(crate) item: Option<&'a std::collections::HashMap<String, String>>,
+    pub(crate) fallback: &'a [(String, String)],
+}
+
+impl<'a> ColorTokens<'a> {
+    pub(crate) fn new(item: &'a std::collections::HashMap<String, String>) -> Self {
+        Self {
+            item: Some(item),
+            fallback: &[],
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&'a str> {
+        self.item
+            .and_then(|item| item.get(name))
+            .or_else(|| {
+                self.fallback
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value)
+            })
+            .map(String::as_str)
+    }
+}
+
 /// Reserved color name for the sidebar panel background.
 const PANEL_COLOR: &str = "$panel";
 
@@ -111,15 +140,10 @@ impl SidebarTokenColor {
 
     /// Replaces a token reference with the color in the token's value; a
     /// missing, empty or non-color value yields `None`.
-    pub(crate) fn resolve(
-        self,
-        tokens: &std::collections::HashMap<String, String>,
-    ) -> Option<Self> {
+    pub(crate) fn resolve(self, tokens: ColorTokens<'_>) -> Option<Self> {
         match self {
             Self::Rgb { .. } | Self::Panel => Some(self),
-            Self::Token(name) => tokens
-                .get(name.as_str())
-                .and_then(|value| Self::parse_hex(value)),
+            Self::Token(name) => tokens.get(name.as_str()).and_then(Self::parse_hex),
         }
     }
 
@@ -186,7 +210,7 @@ pub struct SidebarTokenStyle {
 
 impl SidebarTokenStyle {
     /// Resolves token-reference colors against the current item's tokens.
-    pub(crate) fn resolved(self, tokens: &std::collections::HashMap<String, String>) -> Self {
+    pub(crate) fn resolved(self, tokens: ColorTokens<'_>) -> Self {
         Self {
             fg: self.fg.and_then(|fg| fg.resolve(tokens)),
             bg: self.bg.and_then(|bg| bg.resolve(tokens)),
@@ -245,7 +269,7 @@ impl AgentSidebarToken {
     pub(crate) fn style_for_value(
         &self,
         value: &str,
-        tokens: &std::collections::HashMap<String, String>,
+        tokens: ColorTokens<'_>,
         active: Option<bool>,
     ) -> Option<SidebarTokenStyle> {
         match self {
@@ -270,7 +294,7 @@ impl SpaceSidebarToken {
     pub(crate) fn style_for_value(
         &self,
         value: &str,
-        tokens: &std::collections::HashMap<String, String>,
+        tokens: ColorTokens<'_>,
         active: Option<bool>,
     ) -> Option<SidebarTokenStyle> {
         match self {
@@ -778,14 +802,14 @@ rows = [["state_icon", "tab"], ["focused_tab"], [{ token = "focused_tab", fg = "
         );
         assert_eq!(
             token
-                .style_for_value("logs", &Default::default(), None)
+                .style_for_value("logs", ColorTokens::default(), None)
                 .and_then(|style| style.fg)
                 .map(SidebarTokenColor::ratatui),
             Some(ratatui::style::Color::Rgb(0xff, 0x00, 0x00))
         );
         assert_eq!(
             token
-                .style_for_value("build", &Default::default(), None)
+                .style_for_value("build", ColorTokens::default(), None)
                 .and_then(|style| style.fg),
             style.fg
         );
@@ -975,7 +999,7 @@ rows = [[{ token = "workspace", bg = "#123" }, { token = "branch", fg = "#010203
     fn panel_color_resolves_to_the_given_panel_color() {
         use ratatui::style::Color;
         let panel = SidebarTokenColor::Panel;
-        assert_eq!(panel.resolve(&Default::default()), Some(panel));
+        assert_eq!(panel.resolve(ColorTokens::default()), Some(panel));
         assert_eq!(
             panel.ratatui_with_panel(Color::Rgb(1, 2, 3)),
             Color::Rgb(1, 2, 3)

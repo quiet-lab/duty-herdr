@@ -859,7 +859,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
         if y >= area.bottom() {
             break;
         }
-        if let Some(fill) = crate::ui::sidebar_row_fill(row).filter(|_| !cursor) {
+        let fill = crate::ui::sidebar_row_fill(row).filter(|_| !cursor);
+        if let Some(fill) = fill {
             buffer.set_style(
                 Rect::new(area.x, y, area.width, 1),
                 Style::default().bg(fill),
@@ -935,7 +936,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
             Style::default().fg(palette.overlay1),
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
-            crate::ui::SidebarTokenPaint { panel_text, cursor },
+            crate::ui::SidebarTokenPaint {
+                panel_text,
+                cursor,
+                fill,
+            },
         );
         Paragraph::new(Line::from(spans)).render(
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),

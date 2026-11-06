@@ -1,5 +1,5 @@
 use crate::config::{
-    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
+    AgentSidebarToken, AgentsSidebarConfig, ColorTokens, SidebarTokenStyle, SpaceSidebarToken,
     SpacesSidebarConfig,
 };
 
@@ -65,8 +65,8 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
-    /// Tokens for `$name` colors: the pane's tokens over its workspace's tokens.
-    pub(crate) color_tokens: &'a std::collections::HashMap<String, String>,
+    /// Workspace tokens; `$name` colors fall back to them after the pane's tokens.
+    pub(crate) workspace_tokens: &'a [(String, String)],
 }
 
 pub(crate) fn agent_rows(
@@ -74,6 +74,10 @@ pub(crate) fn agent_rows(
     context: AgentTokenContext<'_>,
     state_text: &str,
 ) -> Vec<Vec<ResolvedToken>> {
+    let color_tokens = ColorTokens {
+        item: Some(context.tokens),
+        fallback: context.workspace_tokens,
+    };
     config
         .rows_for_agent(context.canonical_agent)
         .iter()
@@ -125,8 +129,8 @@ pub(crate) fn agent_rows(
                     };
                     let style = kind
                         .text_value()
-                        .map_or(Some(style.resolved(context.color_tokens)), |value| {
-                            configured.style_for_value(value, context.color_tokens, active)
+                        .map_or(Some(style.resolved(color_tokens)), |value| {
+                            configured.style_for_value(value, color_tokens, active)
                         })?;
                     Some(ResolvedToken::new(kind, style))
                 })
@@ -200,11 +204,16 @@ pub(crate) fn space_rows(
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
                     let active = first_tab_token(token).then_some(context.first_tab_active);
-                    let style = kind
-                        .text_value()
-                        .map_or(Some(style.resolved(context.tokens)), |value| {
-                            configured.style_for_value(value, context.tokens, active)
-                        })?;
+                    let style = kind.text_value().map_or(
+                        Some(style.resolved(ColorTokens::new(context.tokens))),
+                        |value| {
+                            configured.style_for_value(
+                                value,
+                                ColorTokens::new(context.tokens),
+                                active,
+                            )
+                        },
+                    )?;
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
@@ -244,7 +253,7 @@ pub(crate) fn space_tab_row_style(
     }) else {
         return Some(SidebarTokenStyle::default());
     };
-    configured.style_for_value(label, tokens, Some(true))
+    configured.style_for_value(label, ColorTokens::new(tokens), Some(true))
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
@@ -301,7 +310,7 @@ mod tests {
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
-            color_tokens: &entry.tokens,
+            workspace_tokens: &[],
         }
     }
 
@@ -382,6 +391,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 super::super::TokenPaint {
                     panel_text: Color::Reset,
                     cursor: false,
+                    fill: None,
                 },
             );
             assert_eq!(spans.len(), 1);
@@ -895,5 +905,52 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         )
         .unwrap();
         assert_eq!(space_tab_row_style(&hidden, "notes", &entry.tokens), None);
+    }
+
+    #[test]
+    fn agent_colors_fall_back_to_workspace_tokens_after_pane_tokens() {
+        use crate::config::SidebarTokenColor;
+        let config: AgentsSidebarConfig =
+            toml::from_str(r##"rows = [[{ token = "workspace", fg = "$color" }]]"##).unwrap();
+        let entry = entry();
+        let workspace = vec![("color".to_string(), "#00ff00".to_string())];
+        let mut ctx = context(&entry);
+        ctx.workspace_tokens = &workspace;
+        let rows = agent_rows(&config, ctx, "working");
+        assert_eq!(
+            rows[0][0].style.fg,
+            Some(SidebarTokenColor::Rgb { r: 0, g: 255, b: 0 })
+        );
+        let mut pane = super::tests::entry();
+        pane.tokens.insert("color".into(), "#ff0000".into());
+        let mut ctx = context(&pane);
+        ctx.workspace_tokens = &workspace;
+        let rows = agent_rows(&config, ctx, "working");
+        assert_eq!(
+            rows[0][0].style.fg,
+            Some(SidebarTokenColor::Rgb { r: 255, g: 0, b: 0 })
+        );
+    }
+
+    #[test]
+    fn row_fill_skips_panel_backgrounds() {
+        use crate::config::SidebarTokenColor;
+        let token = |bg| ResolvedToken {
+            kind: ResolvedTokenKind::Workspace("x".into()),
+            style: SidebarTokenStyle {
+                bg,
+                ..Default::default()
+            },
+        };
+        let rows = [
+            token(Some(SidebarTokenColor::Panel)),
+            token(None),
+            token(Some(SidebarTokenColor::Rgb { r: 1, g: 2, b: 3 })),
+        ];
+        assert_eq!(
+            super::super::row_fill(&rows),
+            Some(ratatui::style::Color::Rgb(1, 2, 3))
+        );
+        assert_eq!(super::super::row_fill(&rows[..2]), None);
     }
 }
