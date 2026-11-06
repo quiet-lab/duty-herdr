@@ -5,8 +5,9 @@
 //! when the workspace is projected from the cached Git identity, so a `cd` that
 //! the existing identity refresh admits, or a config reload, changes it without
 //! extra state. A child workspace receives a free `tasks` symbol and a free
-//! `colors` entry of its parent's directory once, when it gets its parent; the
-//! pair is stored on the workspace and saved with the session.
+//! `colors` entry of its parent's directory when it gets a parent or moves to
+//! another one; the pair is stored on the workspace and saved with the
+//! session. A restored child saved without a pair gets one after restore.
 //!
 //! Workspace metadata tokens reported through the API (for example by the duty
 //! plugin with `--source duty`) take precedence over these tokens key by key.
@@ -237,6 +238,48 @@ impl crate::app::AppState {
         self.mark_session_dirty();
     }
 
+    /// Gives a pair to restored children saved before Herdr pinned tokens
+    /// (a parent link without `assigned_tokens`). Runs once all workspaces are
+    /// restored so every open workspace counts as taken, in workspace number
+    /// order; the assignment marks the session for saving.
+    pub(crate) fn assign_missing_child_workspace_tokens(&mut self) {
+        let mut pending = self
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, ws)| ws.parent_workspace_id.is_some() && ws.assigned_tokens.is_none())
+            .map(|(index, ws)| {
+                let number = crate::workspace::public_workspace_number(&ws.id);
+                (number.unwrap_or(usize::MAX), index)
+            })
+            .collect::<Vec<_>>();
+        pending.sort_unstable();
+        for (_, child) in pending {
+            let parent = self.workspaces[child]
+                .parent_workspace_id
+                .as_deref()
+                .and_then(|parent_id| self.workspaces.iter().position(|ws| ws.id == parent_id));
+            if let Some(parent) = parent {
+                self.assign_child_workspace_tokens(child, parent);
+            }
+        }
+    }
+
+    /// Re-pins the child's tokens after its parent changed: a new parent gives
+    /// a free pair of the new parent's directory, with the child's former pair
+    /// not counted as taken; a detach makes it a root showing `main` again.
+    /// Callers skip this when the parent stays the same.
+    pub(crate) fn reparent_workspace_tokens(&mut self, child: usize, parent: Option<usize>) {
+        let Some(child_ws) = self.workspaces.get_mut(child) else {
+            return;
+        };
+        child_ws.assigned_tokens = None;
+        match parent {
+            Some(parent) => self.assign_child_workspace_tokens(child, parent),
+            None => self.mark_session_dirty(),
+        }
+    }
+
     /// Applies new `[ui.workspace_symbols]` rules. Root workspaces derive
     /// `main` from the rules at projection time; pinned child tokens stay.
     /// Returns whether any published token changed.
@@ -437,6 +480,88 @@ tasks = ["o"]
             state.workspaces[1].herdr_tokens(&state.workspace_symbols),
             (Some("🦄"), Some("#111111"))
         );
+    }
+
+    #[test]
+    fn moving_to_another_parent_takes_a_free_pair_of_the_new_parent_directory() {
+        let mut state = state_with(RULES, &["/work/pets/duty", "/work", "/tmp", "/tmp"]);
+        make_child(&mut state, 2, 0);
+        make_child(&mut state, 3, 1);
+        assert_eq!(
+            state.workspaces[2].herdr_tokens(&state.workspace_symbols),
+            (Some("🦄"), Some("#111111"))
+        );
+        assert_eq!(
+            state.workspaces[3].herdr_tokens(&state.workspace_symbols),
+            (Some("a"), Some("#000001"))
+        );
+
+        // A -> B: the pair comes from B's set; "a" and "#000001" are taken.
+        state.workspaces[2].parent_workspace_id = Some(state.workspaces[1].id.clone());
+        state.reparent_workspace_tokens(2, Some(1));
+        assert_eq!(
+            state.workspaces[2].herdr_tokens(&state.workspace_symbols),
+            (Some("b"), Some("#000002"))
+        );
+
+        // B -> A: the child's own former pair does not count as taken.
+        state.workspaces[3].parent_workspace_id = Some(state.workspaces[0].id.clone());
+        state.reparent_workspace_tokens(3, Some(0));
+        assert_eq!(
+            state.workspaces[3].herdr_tokens(&state.workspace_symbols),
+            (Some("🦄"), Some("#111111"))
+        );
+
+        // Detach: a root again, showing `main` of its own directory.
+        state.workspaces[3].parent_workspace_id = None;
+        state.reparent_workspace_tokens(3, None);
+        assert_eq!(state.workspaces[3].assigned_tokens, None);
+        assert_eq!(
+            state.workspaces[3].herdr_tokens(&state.workspace_symbols),
+            (Some("🏠"), None)
+        );
+    }
+
+    #[test]
+    fn restored_children_without_pinned_tokens_get_pairs_in_number_order() {
+        let mut state = state_with(RULES, &["/work/pets/duty", "/tmp", "/tmp", "/tmp", "/tmp"]);
+        let id = |number: usize| format!("w{}", crate::workspace::encode_public_number(number));
+        for (ws, number) in state.workspaces.iter_mut().zip([1, 5, 3, 4, 2]) {
+            ws.id = id(number);
+        }
+        for child in 1..=3 {
+            state.workspaces[child].parent_workspace_id = Some(id(1));
+        }
+        // w4 already has its pair from the snapshot; w2 is a root.
+        state.workspaces[3].assigned_tokens = Some(AssignedWorkspaceTokens {
+            symbol: Some("🦄".into()),
+            color: Some("#111111".into()),
+        });
+        state.session_dirty = false;
+
+        state.assign_missing_child_workspace_tokens();
+
+        let pair = |index: usize| state.workspaces[index].herdr_tokens(&state.workspace_symbols);
+        // w3 before w5; both skip w4's pair.
+        assert_eq!(pair(2), (Some("🦌"), Some("#222222")));
+        assert_eq!(pair(1), (Some("🦊"), Some("#111111")));
+        assert_eq!(pair(3), (Some("🦄"), Some("#111111")));
+        assert_eq!(state.workspaces[4].assigned_tokens, None);
+        assert!(state.session_dirty);
+
+        // A second pass changes nothing.
+        let before = state
+            .workspaces
+            .iter()
+            .map(|ws| ws.assigned_tokens.clone())
+            .collect::<Vec<_>>();
+        state.assign_missing_child_workspace_tokens();
+        let after = state
+            .workspaces
+            .iter()
+            .map(|ws| ws.assigned_tokens.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
     }
 
     #[test]
