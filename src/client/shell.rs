@@ -21,6 +21,7 @@ pub(super) use endpoints::*;
 mod global_menu;
 mod graphics;
 mod input;
+mod input_focus;
 mod input_source;
 mod labels;
 mod link_hover;

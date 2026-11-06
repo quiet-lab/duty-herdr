@@ -177,7 +177,7 @@ impl ClientShellState {
             return;
         }
         let action_index = outcome.actions.len();
-        if self.focus_or_activate(
+        if self.focus_selection(
             target.endpoint_id.clone(),
             ClientEndpointFocusTarget::Workspace(target.workspace_id.clone()),
             outcome,
