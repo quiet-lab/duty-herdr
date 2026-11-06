@@ -36,7 +36,7 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
-        self.focus_or_activate(
+        self.focus_selection(
             press.endpoint_id,
             ClientEndpointFocusTarget::Workspace(press.workspace_id),
             outcome,
@@ -96,7 +96,7 @@ impl ClientShellState {
         else {
             return false;
         };
-        self.focus_or_activate(
+        self.focus_selection(
             endpoint_id,
             ClientEndpointFocusTarget::Pane(pane_id),
             outcome,
@@ -160,7 +160,7 @@ impl ClientShellState {
                 _ => unreachable!("endpoint workspace navigation"),
             };
             let (endpoint_id, workspace_id) = workspaces[next].clone();
-            self.focus_or_activate(
+            self.focus_selection(
                 endpoint_id,
                 ClientEndpointFocusTarget::Workspace(workspace_id),
                 outcome,
@@ -187,10 +187,11 @@ impl ClientShellState {
                     index
                 }
                 KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                    let focused = self
-                        .snapshot
-                        .as_deref()
-                        .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
+                    let focused = self.snapshot.as_deref().and_then(|snapshot| {
+                        snapshot.focused_pane_id.as_deref().map(|pane_id| {
+                            super::input_focus::selection_pane_for_focused(snapshot, pane_id)
+                        })
+                    });
                     let current = agents.iter().position(|target| {
                         target.endpoint_id == self.active_endpoint_id
                             && Some(target.pane_id.as_str()) == focused
@@ -207,7 +208,7 @@ impl ClientShellState {
                 _ => unreachable!("endpoint agent navigation"),
             };
             let target = &agents[next];
-            if self.focus_or_activate(
+            if self.focus_selection(
                 target.endpoint_id.clone(),
                 ClientEndpointFocusTarget::Pane(target.pane_id.clone()),
                 outcome,

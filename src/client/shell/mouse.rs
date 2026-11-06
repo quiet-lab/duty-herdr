@@ -2178,7 +2178,15 @@ impl ClientShellState {
                     .agents
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, pane_id)| pane_id.clone());
+                    .map(|(_, pane_id)| {
+                        self.snapshot.as_deref().map_or_else(
+                            || pane_id.clone(),
+                            |snapshot| {
+                                super::input_focus::focus_pane_for_target(snapshot, pane_id)
+                                    .to_owned()
+                            },
+                        )
+                    });
                 if let Some(pane_id) = agent_pane_id {
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
