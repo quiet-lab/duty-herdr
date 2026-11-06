@@ -328,16 +328,21 @@ workspace; условие одно на правило, как `equals` и пр�
 У остальных токенов условие не совпадает.
 
 Выбранная вкладка — на фоне панели цветом подписи workspace, остальные —
-наоборот:
+наоборот (inline-таблица TOML пишется в одну строку, переносы допустимы
+внутри массива):
 
 ```toml
 [ui.sidebar.agents]
-rows = [["state_icon", { token = "tab", fg = "$panel", bg = "$color",
-         rules = [{ active = true, fg = "$color", bg = "$panel" }] }]]
+rows = [[
+  "state_icon",
+  { token = "tab", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] },
+]]
 
 [ui.sidebar.spaces]
-rows = [["state_icon", { token = "workspace", fg = "$panel", bg = "$color",
-         rules = [{ active = true, fg = "$color", bg = "$panel" }] }]]
+rows = [[
+  "state_icon",
+  { token = "workspace", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] },
+]]
 ```
 
 ## Дерево workspace
