@@ -3,14 +3,13 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-/// Reported workspace tokens as carried by a session snapshot: the values
-/// with their remaining lifetime and the per-source sequence counters.
+/// Reported workspace tokens as carried by a session snapshot, with their
+/// remaining lifetime. Per-source sequence counters are not carried: a
+/// reporter that restarts with the server starts counting again.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportedMetadata {
     #[serde(default)]
     pub tokens: HashMap<String, PersistedMetadataToken>,
-    #[serde(default)]
-    pub sequences: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,11 +118,13 @@ impl MetadataTokens {
             .filter_map(|(key, token)| {
                 let ttl_remaining_ms = match token.expires_at {
                     Some(deadline) if deadline <= now => return None,
-                    Some(deadline) => Some(
-                        u64::try_from(deadline.duration_since(now).as_millis())
-                            .unwrap_or(u64::MAX)
-                            .max(1),
-                    ),
+                    Some(deadline) => {
+                        match u64::try_from(deadline.duration_since(now).as_millis()) {
+                            Ok(0) => return None,
+                            Ok(ms) => Some(ms),
+                            Err(_) => Some(u64::MAX),
+                        }
+                    }
                     None => None,
                 };
                 Some((

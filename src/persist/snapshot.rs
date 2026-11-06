@@ -298,9 +298,7 @@ pub fn capture(
 
 fn capture_reported_metadata(ws: &Workspace) -> Option<crate::metadata_tokens::ReportedMetadata> {
     let tokens = ws.metadata_tokens.export(std::time::Instant::now());
-    let sequences = ws.metadata_token_sequences.clone();
-    (!tokens.is_empty() || !sequences.is_empty())
-        .then_some(crate::metadata_tokens::ReportedMetadata { tokens, sequences })
+    (!tokens.is_empty()).then_some(crate::metadata_tokens::ReportedMetadata { tokens })
 }
 
 fn capture_workspace(
@@ -427,6 +425,14 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
 
     let mut value = serde_json::to_value(snapshot).ok()?;
+    // Reported tokens carry remaining lifetimes that differ on every capture.
+    if let Some(workspaces) = value["workspaces"].as_array_mut() {
+        for workspace in workspaces {
+            if let Some(workspace) = workspace.as_object_mut() {
+                workspace.remove("reported_metadata");
+            }
+        }
+    }
     // Sets serialize as arrays; normalize their order as well as JSON object keys.
     let mut collapsed: Vec<_> = snapshot.collapsed_space_keys.iter().collect();
     collapsed.sort_unstable();
@@ -1548,9 +1554,6 @@ mod tests {
             None,
             std::time::Instant::now(),
         );
-        state.workspaces[1]
-            .metadata_token_sequences
-            .insert("hook".into(), 3);
 
         let snapshot = capture_from_state(&state);
         assert_eq!(snapshot.workspaces[0].reported_metadata, None);
@@ -1559,15 +1562,31 @@ mod tests {
         let reported = serde_json::to_value(&snapshot.workspaces[1]).unwrap();
         assert_eq!(
             reported["reported_metadata"],
-            serde_json::json!({
-                "tokens": {"color": {"value": "#ffffff"}},
-                "sequences": {"hook": 3}
-            })
+            serde_json::json!({"tokens": {"color": {"value": "#ffffff"}}})
         );
         let read: WorkspaceSnapshot = serde_json::from_value(reported).unwrap();
         assert_eq!(
             read.reported_metadata,
             snapshot.workspaces[1].reported_metadata
         );
+    }
+
+    #[test]
+    fn layout_fingerprint_ignores_reported_token_lifetimes() {
+        let mut state = state_with_workspaces(&["one"]);
+        let now = std::time::Instant::now();
+        let patch = || HashMap::from([("note".to_owned(), Some("x".to_owned()))]);
+        state.workspaces[0].metadata_tokens.patch(
+            patch(),
+            Some(std::time::Duration::from_secs(60)),
+            now,
+        );
+        let first = layout_fingerprint(&capture_from_state(&state));
+        state.workspaces[0].metadata_tokens.patch(
+            patch(),
+            Some(std::time::Duration::from_secs(30)),
+            now,
+        );
+        assert_eq!(first, layout_fingerprint(&capture_from_state(&state)));
     }
 }

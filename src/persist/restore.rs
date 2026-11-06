@@ -438,11 +438,7 @@ fn restore_workspace(
                 },
             ),
             assigned_tokens: snap.assigned_tokens.clone(),
-            metadata_token_sequences: snap
-                .reported_metadata
-                .as_ref()
-                .map(|reported| reported.sequences.clone())
-                .unwrap_or_default(),
+            metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,
@@ -2359,7 +2355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_keeps_reported_workspace_tokens_and_sequences() {
+    async fn restore_keeps_reported_workspace_tokens() {
         let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
             "../../tests/fixtures/session/current-herdr-session.json"
         ))
@@ -2381,14 +2377,22 @@ mod tests {
             }
         }
         snapshot.workspaces[0].reported_metadata = Some(crate::metadata_tokens::ReportedMetadata {
-            tokens: HashMap::from([(
-                "color".to_owned(),
-                crate::metadata_tokens::PersistedMetadataToken {
-                    value: "#ffffff".into(),
-                    ttl_remaining_ms: None,
-                },
-            )]),
-            sequences: HashMap::from([("hook".to_owned(), 7)]),
+            tokens: HashMap::from([
+                (
+                    "color".to_owned(),
+                    crate::metadata_tokens::PersistedMetadataToken {
+                        value: "#ffffff".into(),
+                        ttl_remaining_ms: None,
+                    },
+                ),
+                (
+                    "note".to_owned(),
+                    crate::metadata_tokens::PersistedMetadataToken {
+                        value: "timed".into(),
+                        ttl_remaining_ms: Some(30_000),
+                    },
+                ),
+            ]),
         });
         // Round-trip through the saved JSON form.
         let json = serde_json::to_string(&snapshot).unwrap();
@@ -2413,7 +2417,8 @@ mod tests {
             workspaces[0].metadata_tokens.value("color"),
             Some("#ffffff")
         );
-        assert_eq!(workspaces[0].metadata_token_sequences["hook"], 7);
+        assert_eq!(workspaces[0].metadata_tokens.value("note"), Some("timed"));
+        assert!(workspaces[0].metadata_tokens.next_expiry().is_some());
         assert_eq!(workspaces[1].metadata_tokens.value("color"), None);
     }
 }
