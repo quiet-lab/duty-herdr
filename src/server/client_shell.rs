@@ -85,11 +85,9 @@ pub(super) fn snapshot_with_completions(
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id,
                 active_tab_id,
-                new_workspace_cwd: app
-                    .resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
-                    .into_os_string()
-                    .into_string()
-                    .unwrap_or_else(|path| path.to_string_lossy().into_owned()),
+                new_workspace_cwd: crate::worktree::path_into_text(
+                    app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index),
+                ),
                 number: workspace.number,
                 label: workspace.label,
                 custom_label: state.custom_name.is_some(),
@@ -153,14 +151,15 @@ pub(super) fn snapshot_with_completions(
                 .map(move |(pane_id, _)| (workspace_index, *pane_id))
         })
         .filter_map(|(workspace_index, pane_id)| app.public_pane_id(workspace_index, pane_id))
-        .collect::<Vec<_>>();
+        .collect::<std::collections::HashSet<_>>();
     let panes = snapshot
         .panes
         .into_iter()
         .map(|pane| {
             let pane_id = pane.pane_id;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
-            let right_click_passthrough = passthrough_pane_ids.contains(&pane_id);
+            let right_click_passthrough =
+                !passthrough_pane_ids.is_empty() && passthrough_pane_ids.contains(&pane_id);
             protocol::ClientShellPane {
                 pane_id,
                 workspace_id: pane.workspace_id,
@@ -768,9 +767,9 @@ mod tests {
     }
 
     fn tab_terminal(app: &mut crate::app::App, tab: usize) -> &mut crate::terminal::TerminalState {
-        let first_tab = &app.state.workspaces[0].tabs[tab];
-        let terminal_id = first_tab
-            .terminal_id(first_tab.root_pane)
+        let tab = &app.state.workspaces[0].tabs[tab];
+        let terminal_id = tab
+            .terminal_id(tab.root_pane)
             .expect("root terminal")
             .clone();
         app.state.terminals.get_mut(&terminal_id).expect("terminal")
@@ -785,6 +784,12 @@ mod tests {
         workspace.cached_identity_cwd = std::path::PathBuf::from("/srv/identity");
         workspace.cached_git_space = None;
         let mut app = facts_test_app(workspace);
+        struct RemoveOnDrop(std::path::PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let dirs = std::env::temp_dir().join(format!(
             "herdr-snapshot-tab-facts-{}-{}",
             std::process::id(),
@@ -793,6 +798,7 @@ mod tests {
                 .expect("clock after epoch")
                 .as_nanos()
         ));
+        let _cleanup = RemoveOnDrop(dirs.clone());
         for name in ["one", "two"] {
             std::fs::create_dir_all(dirs.join(name)).expect("create cwd");
         }
@@ -858,7 +864,6 @@ mod tests {
             Some(app.state.workspaces[0].place_label_for(&other_cwd))
         );
         assert_eq!(other.foreground_process, None);
-        let _ = std::fs::remove_dir_all(dirs);
     }
 
     #[tokio::test(flavor = "current_thread")]

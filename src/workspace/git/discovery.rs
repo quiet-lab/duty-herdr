@@ -55,6 +55,8 @@ pub(crate) fn fallback_label_ref(cwd: &Path) -> Cow<'_, str> {
 /// component-wise comparison runs only when the bytes differ and the last
 /// components agree (a trailing `/`, `.` or repeated separators).
 fn is_home_dir(cwd: &Path, name: Option<&std::ffi::OsStr>) -> bool {
+    // The home name is cached because `file_name` parses components and this
+    // branch runs for every tab whose cwd is not byte-equal to the home.
     static HOME_NAME: std::sync::OnceLock<Option<&'static std::ffi::OsStr>> =
         std::sync::OnceLock::new();
     let Some(home) = crate::worktree::home_dir() else {
