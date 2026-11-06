@@ -345,10 +345,10 @@ impl App {
             focused,
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(path_text),
             foreground_cwd: ws.tabs[tab_idx]
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(path_text),
             foreground_process: terminal.foreground_process.clone(),
             restore_error: terminal.restore_error.clone(),
             label: terminal.manual_label.clone(),
@@ -413,6 +413,14 @@ impl App {
             parent_workspace_id: ws.parent_workspace_id.clone(),
         }
     }
+}
+
+/// Text of `path` as `Path::display` writes it, without the formatter: the
+/// session snapshot converts the cwd of every pane on every client projection.
+fn path_text(path: PathBuf) -> String {
+    path.into_os_string()
+        .into_string()
+        .unwrap_or_else(|path| path.to_string_lossy().into_owned())
 }
 
 fn terminal_agent_session_info(

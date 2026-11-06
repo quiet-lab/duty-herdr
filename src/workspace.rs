@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
@@ -1102,21 +1103,29 @@ impl Workspace {
     /// Place of the workspace: repository name of the cached Git checkout of the
     /// first tab's root pane, otherwise the name of its cwd. Never a path. Reads
     /// only the cached Git identity, never the filesystem.
+    #[cfg(test)]
     pub(crate) fn place_label(&self) -> String {
         self.place_label_for(&self.cached_identity_cwd)
+    }
+
+    /// Owned [`Self::place_label_ref`].
+    #[cfg(test)]
+    pub(crate) fn place_label_for(&self, cwd: &std::path::Path) -> String {
+        self.place_label_ref(cwd).into_owned()
     }
 
     /// Place of a tab's root pane at `cwd`, the single rule of the place: the
     /// workspace repository name while `cwd` lies inside the cached checkout,
     /// otherwise the last component of `cwd` (`~` for the home directory).
     /// Per-tab Git discovery would read the filesystem, so a tab in another
-    /// repository shows its directory name.
-    pub(crate) fn place_label_for(&self, cwd: &std::path::Path) -> String {
+    /// repository shows its directory name. Borrowed from the workspace or
+    /// `cwd` where possible: the client snapshot asks it for every tab.
+    fn place_label_ref<'a>(&'a self, cwd: &'a std::path::Path) -> Cow<'a, str> {
         match &self.cached_git_space {
             Some(space) if cwd.starts_with(&space.repo_root) => {
-                self::git::automatic_workspace_label(cwd, &space.repo_root)
+                self::git::automatic_workspace_label_ref(cwd, &space.repo_root)
             }
-            _ => fallback_label_from_cwd(cwd),
+            _ => self::git::fallback_label_ref(cwd),
         }
     }
 
@@ -1124,9 +1133,11 @@ impl Workspace {
     /// behind the outer window title and the client snapshot. The agent is
     /// the one of the focused pane, otherwise of the first other agent pane in
     /// layout order: its reported `display_agent`, otherwise its effective
-    /// agent label. The place is [`Self::place_label`] for the first tab and
-    /// the root pane's admitted cwd for later tabs. The foreground process is
-    /// the focused pane's. Reads only cached state of this one tab.
+    /// agent label. The place is [`Self::place_label_ref`] of the cached identity
+    /// cwd for the first tab and of the root pane's admitted cwd for later tabs. The foreground process is
+    /// the focused pane's. Reads only cached state of this one tab and borrows
+    /// it: the client snapshot asks for every tab on every projection, so the
+    /// facts allocate only for a reported `display_agent` or a non-UTF-8 name.
     pub(crate) fn tab_label_facts<'a>(
         &'a self,
         tab_index: usize,
@@ -1150,9 +1161,14 @@ impl Workspace {
                 .find_map(|pane_id| terminal_of(pane_id).and_then(tab_agent_label))
         });
         let place = if tab_index == 0 {
-            Some(self.place_label())
+            Some(self.place_label_ref(&self.cached_identity_cwd))
         } else {
-            terminal_of(tab.root_pane).map(|terminal| self.place_label_for(&terminal.cwd))
+            let root_terminal = if tab.root_pane == focused {
+                focused_terminal
+            } else {
+                terminal_of(tab.root_pane)
+            };
+            root_terminal.map(|terminal| self.place_label_ref(&terminal.cwd))
         };
         Some(TabLabelFacts {
             place,
@@ -1535,21 +1551,22 @@ impl Workspace {
 /// Facts of a tab's automatic label, see [`Workspace::tab_label_facts`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TabLabelFacts<'a> {
-    pub(crate) place: Option<String>,
+    pub(crate) place: Option<Cow<'a, str>>,
     /// Detected agent of the tab; `Some` exactly while an agent is alive.
-    pub(crate) agent: Option<String>,
+    pub(crate) agent: Option<Cow<'a, str>>,
     pub(crate) foreground_process: Option<&'a str>,
 }
 
 /// Agent label of an agent terminal: its reported `display_agent`, otherwise
 /// its effective agent label; `None` for a plain terminal.
-fn tab_agent_label(terminal: &TerminalState) -> Option<String> {
+fn tab_agent_label(terminal: &TerminalState) -> Option<Cow<'_, str>> {
     if !terminal.is_agent_terminal() {
         return None;
     }
     terminal
         .effective_display_agent()
-        .or_else(|| terminal.effective_agent_label().map(str::to_owned))
+        .map(Cow::Owned)
+        .or_else(|| terminal.effective_agent_label().map(Cow::Borrowed))
         .filter(|label| !label.is_empty())
 }
 
@@ -1764,6 +1781,29 @@ mod tests {
             ws.place_label_for(&home.join("work/a/b/set-dev2-2")),
             "set-dev2-2"
         );
+        // Path equality, not byte equality, recognizes the home directory.
+        let mut trailing = home.as_os_str().to_owned();
+        trailing.push("/");
+        assert_eq!(ws.place_label_for(std::path::Path::new(&trailing)), "~");
+        assert_eq!(ws.place_label_for(&home.join(".")), "~");
+        // A directory named like the home directory elsewhere keeps its name.
+        if let Some(name) = home.file_name() {
+            let lookalike = std::path::Path::new("/srv/lookalike").join(name);
+            assert_eq!(
+                ws.place_label_for(&lookalike),
+                name.to_string_lossy().as_ref()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn place_label_of_a_non_utf8_name_is_lossy() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut ws = Workspace::test_new("place");
+        ws.cached_git_space = None;
+        let cwd = std::path::Path::new("/srv").join(std::ffi::OsStr::from_bytes(b"caf\xff"));
+        assert_eq!(ws.place_label_for(&cwd), "caf\u{fffd}");
     }
 
     #[test]

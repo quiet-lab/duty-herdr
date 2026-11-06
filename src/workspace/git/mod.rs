@@ -6,7 +6,9 @@ mod status;
 #[cfg(test)]
 pub(super) mod test_support;
 
-pub(crate) use self::discovery::automatic_workspace_label;
+pub(crate) use self::discovery::{
+    automatic_workspace_label, automatic_workspace_label_ref, fallback_label_ref,
+};
 
 pub use self::{
     discovery::{
