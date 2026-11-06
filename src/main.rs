@@ -324,9 +324,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # tab_bar_position = "top"
 
 # Tab colors by focus. $color and other $name references take the tokens of
-# the tab's workspace, $panel is the panel background, a|b is a fallback.
+# the tab's workspace, $panel is the panel background, $terminal is the
+# terminal area background, a|b is a fallback.
 # Unset keeps the theme colors.
-# tab_bar = { active = { fg = "$color|#ffffff", bg = "$panel" }, inactive = { fg = "$panel", bg = "$color|#ffffff" } }
+# tab_bar = { active = { fg = "$color|#ffffff", bg = "$terminal" }, inactive = { fg = "$panel", bg = "$color|#ffffff" } }
 
 # Ordered status entries at the right edge of the desktop tab bar.
 # Supported types: zoom, hostname, datetime, text, and command.

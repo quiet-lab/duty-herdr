@@ -292,7 +292,8 @@ pub(crate) fn panel_text_color(
 }
 
 /// Background that fills a whole row: the first token background that paints.
-/// `$panel` paints nothing, so the row keeps the panel and theme row backgrounds.
+/// `$panel` paints nothing, so the row keeps the panel and theme row backgrounds;
+/// `$terminal` paints the host terminal background.
 pub(crate) fn row_fill(resolved: &[ResolvedToken]) -> Option<ratatui::style::Color> {
     resolved
         .iter()
@@ -302,6 +303,8 @@ pub(crate) fn row_fill(resolved: &[ResolvedToken]) -> Option<ratatui::style::Col
 fn painted_background(color: SidebarTokenColor) -> Option<ratatui::style::Color> {
     match color {
         SidebarTokenColor::Rgb { .. } => Some(color.ratatui()),
+        // Paints the host terminal background over the panel and row fills.
+        SidebarTokenColor::Terminal => Some(ratatui::style::Color::Reset),
         SidebarTokenColor::Panel | SidebarTokenColor::Token(_) | SidebarTokenColor::Fallback(_) => {
             None
         }
@@ -333,9 +336,10 @@ impl TokenPaint {
         let background = patch.bg.and_then(painted_background);
         match patch.fg {
             Some(SidebarTokenColor::Panel) if self.cursor => {
-                if let Some(background) = background {
-                    style = style.fg(background);
-                }
+                // `$terminal` paints Reset, which is no readable text color.
+                style = style.fg(background
+                    .filter(|color| *color != ratatui::style::Color::Reset)
+                    .unwrap_or(self.panel_text));
             }
             Some(foreground) => {
                 style = style.fg(foreground.ratatui_with_panel(self.panel_text));

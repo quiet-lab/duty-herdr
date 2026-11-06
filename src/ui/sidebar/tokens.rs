@@ -953,4 +953,20 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         );
         assert_eq!(super::super::row_fill(&rows[..2]), None);
     }
+
+    #[test]
+    fn row_fill_paints_terminal_background_as_reset() {
+        use crate::config::SidebarTokenColor;
+        let rows = [ResolvedToken {
+            kind: ResolvedTokenKind::Workspace("x".into()),
+            style: SidebarTokenStyle {
+                bg: Some(SidebarTokenColor::Terminal),
+                ..Default::default()
+            },
+        }];
+        assert_eq!(
+            super::super::row_fill(&rows),
+            Some(ratatui::style::Color::Reset)
+        );
+    }
 }

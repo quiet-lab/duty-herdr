@@ -325,6 +325,29 @@ fn tab_strip_takes_workspace_color_by_focus() {
 }
 
 #[test]
+fn tab_strip_terminal_background_resets_the_active_tab_over_the_panel_fill() {
+    let config: Config = toml::from_str(
+        r##"
+[ui.tab_bar]
+active = { fg = "$color|#ffffff", bg = "$terminal" }
+inactive = { fg = "$panel", bg = "$color|#ffffff" }
+"##,
+    )
+    .expect("config");
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(false));
+    let panel = state.config.palette.panel_bg;
+    let (fg, bg, rect) = tab_cell(&state, &buffer, 0);
+    assert_eq!((fg, bg), (RED, Color::Reset));
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, Color::Reset, "{x}");
+    }
+    // The strip outside the active tab keeps the panel fill.
+    assert_eq!(buffer[(rect.right(), rect.y)].bg, panel);
+    let (_, bg, _) = tab_cell(&state, &buffer, 1);
+    assert_eq!(bg, RED);
+}
+
+#[test]
 fn tab_strip_uses_fallback_color_without_workspace_color_token() {
     let config: Config = toml::from_str(TAB_BAR_COLORS).expect("config");
     let mut projected = two_tab_snapshot(false);
