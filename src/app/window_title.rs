@@ -122,38 +122,21 @@ impl App {
     pub(crate) fn workspace_title_label(&self, workspace_index: usize) -> Option<String> {
         let workspace = self.state.workspaces.get(workspace_index)?;
         let fallback = workspace.display_name_from_terminals(&self.state.terminals);
-        let Some(tab) = workspace.tabs.first() else {
+        let Some(facts) = workspace.tab_label_facts(0, &self.state.terminals) else {
             return Some(fallback);
         };
-        let terminal_of = |pane_id| {
-            tab.terminal_id(pane_id)
-                .and_then(|terminal_id| self.state.terminals.get(terminal_id))
-        };
-        let focused = tab.layout.focused();
-        let focused_terminal = terminal_of(focused);
-        // The focused pane answers first, then the other panes of the tab.
-        let agent = std::iter::once(focused)
-            .chain(
-                tab.layout
-                    .pane_ids()
-                    .into_iter()
-                    .filter(|pane_id| *pane_id != focused),
-            )
-            .filter_map(terminal_of)
-            .find_map(first_tab_agent_label);
         let symbol = workspace.effective_symbol(&self.state.workspace_symbols);
-        let place = workspace.place_label();
-        let facts = crate::auto_label::LabelFacts::new(
+        let label_facts = crate::auto_label::LabelFacts::new(
             symbol.as_deref(),
-            Some(&place),
-            agent.as_deref(),
-            focused_terminal.and_then(|terminal| terminal.foreground_process.as_deref()),
+            facts.place.as_deref(),
+            facts.agent.as_deref(),
+            facts.foreground_process,
         );
         Some(
             crate::auto_label::display_label(
                 workspace.custom_name.as_deref(),
-                agent.is_some(),
-                facts.auto_label(),
+                facts.agent.is_some(),
+                label_facts.auto_label().map(std::borrow::Cow::Owned),
                 &fallback,
             )
             .into_owned(),
@@ -189,21 +172,6 @@ impl App {
             .into_owned(),
         )
     }
-}
-
-/// Agent shown for a terminal of the first tab: its display agent, otherwise
-/// its agent label, while the terminal runs an agent.
-fn first_tab_agent_label(terminal: &crate::terminal::TerminalState) -> Option<String> {
-    terminal
-        .is_agent_terminal()
-        .then(|| {
-            terminal
-                .effective_presentation()
-                .display_agent
-                .or_else(|| terminal.effective_agent_label().map(str::to_owned))
-        })
-        .flatten()
-        .filter(|label| !label.is_empty())
 }
 
 #[cfg(test)]
