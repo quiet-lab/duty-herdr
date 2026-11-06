@@ -1031,7 +1031,7 @@
           "key": "ui.tab_bar",
           "type": "table",
           "default": "{}",
-          "description": "Colors of the desktop tab row tabs by focus: active and inactive, each an inline table with fg, bg, bold and dim. Colors accept #RGB, #RRGGBB, $panel (the panel background) and $name (a metadata token of the tab's workspace), with fallbacks separated by | such as \"$color|#ffffff\". Unset fields keep the theme colors."
+          "description": "Colors of the desktop tab row tabs by focus: active and inactive, each an inline table with fg, bg, bold and dim. Colors accept #RGB, #RRGGBB, $panel (the panel background), $terminal (the terminal area background) and $name (a metadata token of the tab's workspace), with fallbacks separated by | such as \"$color|#ffffff\". Unset fields keep the theme colors."
         },
         {
           "key": "ui.tab_bar_right",

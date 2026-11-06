@@ -106,6 +106,8 @@ impl<'a> ColorTokens<'a> {
 
 /// Reserved color name for the sidebar panel background.
 const PANEL_COLOR: &str = "$panel";
+/// Reserved color name for the default background of the terminal area.
+const TERMINAL_COLOR: &str = "$terminal";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarTokenColor {
@@ -118,6 +120,9 @@ pub enum SidebarTokenColor {
     Token(SidebarColorTokenName),
     /// Background of the sidebar panel in the current theme (`$panel`).
     Panel,
+    /// Default background of the terminal area (`$terminal`): the host
+    /// terminal background, rendered as `Color::Reset`.
+    Terminal,
     /// Ordered alternatives `a|b|c`; the first one that resolves is used.
     Fallback(ColorChain),
 }
@@ -131,6 +136,7 @@ enum ColorAtom {
     Rgb { r: u8, g: u8, b: u8 },
     Token(SidebarColorTokenName),
     Panel,
+    Terminal,
 }
 
 impl ColorAtom {
@@ -139,6 +145,7 @@ impl ColorAtom {
             Self::Rgb { r, g, b } => SidebarTokenColor::Rgb { r, g, b },
             Self::Token(name) => SidebarTokenColor::Token(name),
             Self::Panel => SidebarTokenColor::Panel,
+            Self::Terminal => SidebarTokenColor::Terminal,
         }
     }
 }
@@ -179,7 +186,7 @@ impl SidebarTokenColor {
     /// missing, empty or non-color value yields `None`.
     pub(crate) fn resolve(self, tokens: ColorTokens<'_>) -> Option<Self> {
         match self {
-            Self::Rgb { .. } | Self::Panel => Some(self),
+            Self::Rgb { .. } | Self::Panel | Self::Terminal => Some(self),
             Self::Token(name) => tokens.get(name.as_str()).and_then(Self::parse_hex),
             Self::Fallback(chain) => chain
                 .atoms()
@@ -197,18 +204,23 @@ impl SidebarTokenColor {
         match self {
             Self::Rgb { r, g, b } => ratatui::style::Color::Rgb(r, g, b),
             Self::Panel => panel,
+            // The cell shows the host terminal background.
+            Self::Terminal => ratatui::style::Color::Reset,
             // Unresolved references are dropped before rendering.
             Self::Token(_) | Self::Fallback(_) => ratatui::style::Color::Reset,
         }
     }
 
-    /// Parses one alternative: `#RGB`, `#RRGGBB`, `$panel` or `$token`.
+    /// Parses one alternative: `#RGB`, `#RRGGBB`, `$panel`, `$terminal` or `$token`.
     fn parse_atom(value: &str) -> Result<ColorAtom, String> {
         if value.is_empty() {
             return Err("sidebar token color has an empty alternative".to_owned());
         }
         if value == PANEL_COLOR {
             return Ok(ColorAtom::Panel);
+        }
+        if value == TERMINAL_COLOR {
+            return Ok(ColorAtom::Terminal);
         }
         if let Some(name) = value.strip_prefix('$') {
             return SidebarColorTokenName::new(name)
@@ -218,7 +230,7 @@ impl SidebarTokenColor {
         match Self::parse_hex(value) {
             Some(Self::Rgb { r, g, b }) => Ok(ColorAtom::Rgb { r, g, b }),
             _ => Err(format!(
-                "sidebar token color must be #RGB, #RRGGBB, $panel or $token, got `{value}`"
+                "sidebar token color must be #RGB, #RRGGBB, $panel, $terminal or $token, got `{value}`"
             )),
         }
     }
@@ -257,6 +269,7 @@ impl ColorAtom {
             Self::Rgb { r, g, b } => format!("#{r:02x}{g:02x}{b:02x}"),
             Self::Token(name) => format!("${}", name.as_str()),
             Self::Panel => PANEL_COLOR.to_owned(),
+            Self::Terminal => TERMINAL_COLOR.to_owned(),
         }
     }
 }
@@ -270,6 +283,7 @@ impl Serialize for SidebarTokenColor {
             Self::Rgb { r, g, b } => serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}")),
             Self::Token(name) => serializer.serialize_str(&format!("${}", name.as_str())),
             Self::Panel => serializer.serialize_str(PANEL_COLOR),
+            Self::Terminal => serializer.serialize_str(TERMINAL_COLOR),
             Self::Fallback(chain) => {
                 let parts: Vec<String> = chain.atoms().iter().map(|atom| atom.encode()).collect();
                 serializer.serialize_str(&parts.join("|"))
@@ -1101,6 +1115,36 @@ rows = [[{ token = "workspace", bg = "#123" }, { token = "branch", fg = "#010203
             panel.ratatui_with_panel(Color::Rgb(1, 2, 3)),
             Color::Rgb(1, 2, 3)
         );
+    }
+
+    #[test]
+    fn terminal_color_parses_chains_round_trips_and_resets() {
+        use ratatui::style::Color;
+        let config: SidebarConfig = toml::from_str(
+            r##"
+[spaces]
+rows = [[{ token = "workspace", fg = "$color|$terminal", bg = "$terminal" }]]
+"##,
+        )
+        .unwrap();
+        let (_, style) = config.spaces.rows[0][0].parts();
+        assert_eq!(style.bg, Some(SidebarTokenColor::Terminal));
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains(r#"bg = "$terminal""#));
+        assert!(encoded.contains(r#"fg = "$color|$terminal""#));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+        let terminal = SidebarTokenColor::Terminal;
+        assert_eq!(terminal.resolve(ColorTokens::default()), Some(terminal));
+        assert_eq!(
+            terminal.ratatui_with_panel(Color::Rgb(1, 2, 3)),
+            Color::Reset
+        );
+        assert_eq!(
+            color("$color|$terminal").resolve(ColorTokens::default()),
+            Some(terminal)
+        );
+        assert!(SidebarTokenColor::parse("$terminal|$color").is_err());
+        assert!(SidebarTokenColor::parse("$terminal|#fff").is_err());
     }
 
     fn color(value: &str) -> SidebarTokenColor {
