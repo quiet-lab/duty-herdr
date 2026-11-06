@@ -94,6 +94,22 @@ pub(crate) fn render_tab_bar(
         content.right().saturating_sub(new_tab_width)
     };
 
+    // Every visible tab belongs to the focused workspace: resolve both
+    // configured styles once per render, not per tab.
+    let workspace_tokens = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| {
+            Some(workspace.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+        })
+        .map_or(&[][..], |workspace| workspace.tokens.as_slice());
+    let tokens = crate::config::ColorTokens {
+        item: None,
+        fallback: workspace_tokens,
+    };
+    let active_style = config.tab_bar.active.map(|style| style.resolved(tokens));
+    let inactive_style = config.tab_bar.inactive.map(|style| style.resolved(tokens));
+
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
@@ -109,15 +125,19 @@ pub(crate) fn render_tab_bar(
             let base = Style::default()
                 .fg(panel_contrast_fg(palette))
                 .bg(palette.accent);
-            if tab.custom_label {
+            let base = if tab.custom_label {
                 base.add_modifier(Modifier::BOLD)
             } else {
                 base
-            }
-        } else if tab.custom_label {
-            Style::default().fg(palette.overlay1).bg(palette.surface0)
+            };
+            apply_tab_style(base, active_style, palette.panel_bg)
         } else {
-            Style::default().fg(palette.overlay0).bg(palette.surface0)
+            let base = if tab.custom_label {
+                Style::default().fg(palette.overlay1).bg(palette.surface0)
+            } else {
+                Style::default().fg(palette.overlay0).bg(palette.surface0)
+            };
+            apply_tab_style(base, inactive_style, palette.panel_bg)
         };
         let padding = width.saturating_sub(display_width(&name));
         let left = padding / 2;
@@ -226,6 +246,36 @@ pub(crate) fn render_tab_bar(
         }
     }
     render_tab_bar_status(buffer, area, snapshot, palette);
+}
+
+/// Overlays the configured tab style on the theme `base`; unset or
+/// unresolvable fields keep the theme values.
+fn apply_tab_style(
+    base: Style,
+    configured: Option<crate::config::SidebarTokenStyle>,
+    panel: ratatui::style::Color,
+) -> Style {
+    let Some(configured) = configured else {
+        return base;
+    };
+    let mut style = base;
+    if let Some(fg) = configured.fg {
+        style = style.fg(fg.ratatui_with_panel(panel));
+    }
+    if let Some(bg) = configured.bg {
+        style = style.bg(bg.ratatui_with_panel(panel));
+    }
+    match configured.bold {
+        Some(true) => style = style.add_modifier(Modifier::BOLD),
+        Some(false) => style = style.remove_modifier(Modifier::BOLD),
+        None => {}
+    }
+    match configured.dim {
+        Some(true) => style = style.add_modifier(Modifier::DIM),
+        Some(false) => style = style.remove_modifier(Modifier::DIM),
+        None => {}
+    }
+    style
 }
 
 pub(crate) fn tab_bar_status_width(snapshot: &ClientShellSnapshot) -> u16 {
