@@ -302,7 +302,9 @@ pub(crate) fn row_fill(resolved: &[ResolvedToken]) -> Option<ratatui::style::Col
 fn painted_background(color: SidebarTokenColor) -> Option<ratatui::style::Color> {
     match color {
         SidebarTokenColor::Rgb { .. } => Some(color.ratatui()),
-        SidebarTokenColor::Panel | SidebarTokenColor::Token(_) => None,
+        SidebarTokenColor::Panel | SidebarTokenColor::Token(_) | SidebarTokenColor::Fallback(_) => {
+            None
+        }
     }
 }
 

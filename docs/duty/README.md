@@ -327,6 +327,14 @@ workspace; условие одно на правило, как `equals` и пр�
 
 У остальных токенов условие не совпадает.
 
+Значение цвета `fg` и `bg` принимает до четырёх вариантов через `|`
+(`"$color|#ffffff"`, `"$accent|$color|#89b4fa"`): берётся первый, который
+раскрывается. Токен раскрывается, если он есть и его значение — цвет
+`#RGB` или `#RRGGBB`; `$panel` и литерал раскрываются всегда. Пустой
+вариант, неизвестное имя переменной и плохой литерал отвергаются при
+чтении конфигурации. Workspace без токена `color` с запасным `#ffffff`
+остаётся читаемым.
+
 Выбранная вкладка — на фоне панели цветом подписи workspace, остальные —
 наоборот (inline-таблица TOML пишется в одну строку, переносы допустимы
 внутри массива):
@@ -335,13 +343,13 @@ workspace; условие одно на правило, как `equals` и пр�
 [ui.sidebar.agents]
 rows = [[
   "state_icon",
-  { token = "tab", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] },
+  { token = "tab", fg = "$panel", bg = "$color|#ffffff", rules = [{ active = true, fg = "$color|#ffffff", bg = "$panel" }] },
 ]]
 
 [ui.sidebar.spaces]
 rows = [[
   "state_icon",
-  { token = "workspace", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] },
+  { token = "workspace", fg = "$color|#ffffff" },
 ]]
 ```
 

@@ -118,6 +118,43 @@ pub enum SidebarTokenColor {
     Token(SidebarColorTokenName),
     /// Background of the sidebar panel in the current theme (`$panel`).
     Panel,
+    /// Ordered alternatives `a|b|c`; the first one that resolves is used.
+    Fallback(ColorChain),
+}
+
+/// Maximum number of `|`-separated alternatives in one color value.
+const MAX_COLOR_ALTERNATIVES: usize = 4;
+
+/// One alternative of a color chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorAtom {
+    Rgb { r: u8, g: u8, b: u8 },
+    Token(SidebarColorTokenName),
+    Panel,
+}
+
+impl ColorAtom {
+    fn color(self) -> SidebarTokenColor {
+        match self {
+            Self::Rgb { r, g, b } => SidebarTokenColor::Rgb { r, g, b },
+            Self::Token(name) => SidebarTokenColor::Token(name),
+            Self::Panel => SidebarTokenColor::Panel,
+        }
+    }
+}
+
+/// Fixed-capacity list of two or more alternatives; kept `Copy` so styles stay
+/// cheap to resolve in render paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorChain {
+    atoms: [ColorAtom; MAX_COLOR_ALTERNATIVES],
+    len: u8,
+}
+
+impl ColorChain {
+    fn atoms(&self) -> &[ColorAtom] {
+        &self.atoms[..usize::from(self.len)]
+    }
 }
 
 impl SidebarTokenColor {
@@ -144,6 +181,10 @@ impl SidebarTokenColor {
         match self {
             Self::Rgb { .. } | Self::Panel => Some(self),
             Self::Token(name) => tokens.get(name.as_str()).and_then(Self::parse_hex),
+            Self::Fallback(chain) => chain
+                .atoms()
+                .iter()
+                .find_map(|atom| atom.color().resolve(tokens)),
         }
     }
 
@@ -157,7 +198,60 @@ impl SidebarTokenColor {
             Self::Rgb { r, g, b } => ratatui::style::Color::Rgb(r, g, b),
             Self::Panel => panel,
             // Unresolved references are dropped before rendering.
-            Self::Token(_) => ratatui::style::Color::Reset,
+            Self::Token(_) | Self::Fallback(_) => ratatui::style::Color::Reset,
+        }
+    }
+
+    /// Parses one alternative: `#RGB`, `#RRGGBB`, `$panel` or `$token`.
+    fn parse_atom(value: &str) -> Result<ColorAtom, String> {
+        if value.is_empty() {
+            return Err("sidebar token color has an empty alternative".to_owned());
+        }
+        if value == PANEL_COLOR {
+            return Ok(ColorAtom::Panel);
+        }
+        if let Some(name) = value.strip_prefix('$') {
+            return SidebarColorTokenName::new(name)
+                .map(ColorAtom::Token)
+                .ok_or_else(|| format!("invalid custom sidebar token `{value}` in color"));
+        }
+        match Self::parse_hex(value) {
+            Some(Self::Rgb { r, g, b }) => Ok(ColorAtom::Rgb { r, g, b }),
+            _ => Err(format!(
+                "sidebar token color must be #RGB, #RRGGBB, $panel or $token, got `{value}`"
+            )),
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, String> {
+        if !value.contains('|') {
+            return Self::parse_atom(value).map(ColorAtom::color);
+        }
+        let mut atoms = [ColorAtom::Panel; MAX_COLOR_ALTERNATIVES];
+        let mut len = 0;
+        for part in value.split('|') {
+            let atom = Self::parse_atom(part.trim())?;
+            if len == MAX_COLOR_ALTERNATIVES {
+                return Err(format!(
+                    "sidebar token color accepts at most {MAX_COLOR_ALTERNATIVES} alternatives"
+                ));
+            }
+            atoms[len] = atom;
+            len += 1;
+        }
+        Ok(Self::Fallback(ColorChain {
+            atoms,
+            len: len as u8,
+        }))
+    }
+}
+
+impl ColorAtom {
+    fn encode(self) -> String {
+        match self {
+            Self::Rgb { r, g, b } => format!("#{r:02x}{g:02x}{b:02x}"),
+            Self::Token(name) => format!("${}", name.as_str()),
+            Self::Panel => PANEL_COLOR.to_owned(),
         }
     }
 }
@@ -171,6 +265,10 @@ impl Serialize for SidebarTokenColor {
             Self::Rgb { r, g, b } => serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}")),
             Self::Token(name) => serializer.serialize_str(&format!("${}", name.as_str())),
             Self::Panel => serializer.serialize_str(PANEL_COLOR),
+            Self::Fallback(chain) => {
+                let parts: Vec<String> = chain.atoms().iter().map(|atom| atom.encode()).collect();
+                serializer.serialize_str(&parts.join("|"))
+            }
         }
     }
 }
@@ -181,21 +279,7 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        if value == PANEL_COLOR {
-            return Ok(Self::Panel);
-        }
-        if let Some(name) = value.strip_prefix('$') {
-            return SidebarColorTokenName::new(name)
-                .map(Self::Token)
-                .ok_or_else(|| {
-                    serde::de::Error::custom(format!(
-                        "invalid custom sidebar token `{value}` in color"
-                    ))
-                });
-        }
-        Self::parse_hex(&value).ok_or_else(|| {
-            serde::de::Error::custom("sidebar token color must be #RGB, #RRGGBB, $panel or $token")
-        })
+        Self::parse(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -1004,6 +1088,88 @@ rows = [[{ token = "workspace", bg = "#123" }, { token = "branch", fg = "#010203
             panel.ratatui_with_panel(Color::Rgb(1, 2, 3)),
             Color::Rgb(1, 2, 3)
         );
+    }
+
+    fn color(value: &str) -> SidebarTokenColor {
+        SidebarTokenColor::parse(value).unwrap()
+    }
+
+    #[test]
+    fn fallback_chain_parses_two_and_three_alternatives_and_round_trips() {
+        let config: SidebarConfig = toml::from_str(
+            r##"
+[spaces]
+rows = [[{ token = "workspace", fg = "$color|#ffffff", bg = "$accent|$color|#89b4fa", rules = [{ active = true, fg = "$color|$panel" }] }]]
+"##,
+        )
+        .unwrap();
+        let (_, style) = config.spaces.rows[0][0].parts();
+        assert!(matches!(style.fg, Some(SidebarTokenColor::Fallback(_))));
+        assert!(matches!(style.bg, Some(SidebarTokenColor::Fallback(_))));
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains(r##"fg = "$color|#ffffff""##));
+        assert!(encoded.contains(r##"bg = "$accent|$color|#89b4fa""##));
+        assert!(encoded.contains(r#"fg = "$color|$panel""#));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+    }
+
+    #[test]
+    fn single_value_parses_as_before() {
+        assert_eq!(color("$panel"), SidebarTokenColor::Panel);
+        assert!(matches!(color("$color"), SidebarTokenColor::Token(_)));
+        assert_eq!(
+            color("#fff"),
+            SidebarTokenColor::Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+        );
+    }
+
+    #[test]
+    fn fallback_chain_rejects_invalid_alternatives() {
+        for value in [
+            "|",
+            "$color|",
+            "|#fff",
+            "$color||#fff",
+            "$bad.name|#fff",
+            "$color|red",
+            "$color|#abcd",
+            "$a|$b|$c|$d|$e",
+        ] {
+            assert!(SidebarTokenColor::parse(value).is_err(), "{value}");
+            let input =
+                format!("[spaces]\nrows = [[{{ token = \"workspace\", fg = \"{value}\" }}]]\n");
+            assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn fallback_chain_resolves_first_available_alternative() {
+        let white = SidebarTokenColor::Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        let pink = SidebarTokenColor::Rgb {
+            r: 0xf3,
+            g: 0x8b,
+            b: 0xa8,
+        };
+        let chain = color("$color|#ffffff");
+        assert_eq!(chain.resolve(ColorTokens::default()), Some(white));
+        let tokens = std::collections::HashMap::from([("color".to_owned(), "#f38ba8".to_owned())]);
+        assert_eq!(chain.resolve(ColorTokens::new(&tokens)), Some(pink));
+        // A non-color token value falls through to the next alternative.
+        let tokens = std::collections::HashMap::from([("color".to_owned(), "red".to_owned())]);
+        assert_eq!(chain.resolve(ColorTokens::new(&tokens)), Some(white));
+        assert_eq!(
+            color("$color|$panel").resolve(ColorTokens::default()),
+            Some(SidebarTokenColor::Panel)
+        );
+        assert_eq!(color("$a|$b").resolve(ColorTokens::default()), None);
     }
 
     #[test]
