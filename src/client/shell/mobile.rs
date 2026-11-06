@@ -130,7 +130,10 @@ fn render_header_status(
         area.x.saturating_add(icon_width),
         area.y,
         label_width,
-        &crate::ui::truncate_end(&workspace.label, usize::from(label_width.saturating_sub(1))),
+        &crate::ui::truncate_end(
+            &super::labels::workspace_label(snapshot, workspace),
+            usize::from(label_width.saturating_sub(1)),
+        ),
         Style::default()
             .fg(palette.text)
             .bg(palette.panel_bg)
@@ -236,10 +239,11 @@ fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWor
         .iter()
         .position(|tab| tab.tab_id == workspace.active_tab_id)
         .unwrap_or(0);
+    let symbol = super::labels::workspace_symbol(workspace);
     let label = tabs
         .get(active)
-        .map(|tab| tab.label.as_str())
-        .unwrap_or("1");
+        .map(|tab| super::labels::tab_label(symbol, tab))
+        .unwrap_or(std::borrow::Cow::Borrowed("1"));
     if tabs.len() <= 1 {
         format!("tab {label}")
     } else {
@@ -682,8 +686,16 @@ fn mobile_items(
                 .iter()
                 .filter(|candidate| candidate.workspace_id == agent.workspace_id)
                 .count();
-            if let Some(tab) = tab.filter(|tab| tab.custom_label || workspace_tab_count > 1) {
-                detail.push(tab.label.clone());
+            if let Some(tab) = tab.filter(|tab| {
+                tab.custom_label || workspace_tab_count > 1 || super::labels::tab_has_facts(tab)
+            }) {
+                detail.push(
+                    super::labels::tab_label(
+                        workspace.and_then(super::labels::workspace_symbol),
+                        tab,
+                    )
+                    .into_owned(),
+                );
             }
             let status_key = status_text(agent.agent_status);
             detail.push(
@@ -815,7 +827,7 @@ fn mobile_items(
             } else {
                 ""
             };
-            let name = if entry.indented && !workspace.custom_label {
+            let fallback = if entry.indented && !workspace.custom_label {
                 workspace
                     .branch
                     .as_deref()
@@ -824,6 +836,11 @@ fn mobile_items(
             } else {
                 &workspace.label
             };
+            let name = super::labels::WorkspaceLabel::new(
+                workspace,
+                super::labels::first_tab(endpoint.snapshot, workspace),
+            )
+            .display(workspace, fallback);
             let branch = workspace.branch.as_deref().unwrap_or("shell");
             let detail_prefix = if entry.indented {
                 if entry.last_child {
@@ -917,6 +934,11 @@ fn mobile_items(
     }
 
     if let Some(workspace_id) = snapshot.focused_workspace_id.as_deref() {
+        let focused_symbol = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+            .and_then(super::labels::workspace_symbol);
         items.push(MobileItem::section("tabs", palette));
         items.push(MobileItem::action(
             "  + new tab",
@@ -934,8 +956,12 @@ fn mobile_items(
             } else {
                 palette.panel_bg
             };
-            let label = if tab.custom_label {
-                format!("{} · {}", index + 1, tab.label)
+            let label = if tab.custom_label || super::labels::tab_has_facts(tab) {
+                format!(
+                    "{} · {}",
+                    index + 1,
+                    super::labels::tab_label(focused_symbol, tab)
+                )
             } else {
                 format!("tab {}", tab.label)
             };

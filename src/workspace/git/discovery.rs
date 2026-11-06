@@ -42,6 +42,19 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
+/// `path` with the home directory written as `~`, for place labels outside Git.
+pub(crate) fn tilde_path(path: &Path) -> String {
+    tilde_path_with_home(path, std::env::var_os("HOME").as_deref().map(Path::new))
+}
+
+pub(crate) fn tilde_path_with_home(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     let repo_root = git_repo_root(cwd)?;
     let git_dir = canonicalize_best_effort_path(&git_dir_for_repo_root(&repo_root)?);
@@ -371,6 +384,27 @@ mod tests {
 
     use super::*;
     use crate::workspace::git::test_support::run_git;
+
+    #[test]
+    fn tilde_path_abbreviates_only_the_home_prefix() {
+        let home = Path::new("/home/user");
+        assert_eq!(
+            tilde_path_with_home(Path::new("/home/user"), Some(home)),
+            "~"
+        );
+        assert_eq!(
+            tilde_path_with_home(Path::new("/home/user/work/notes"), Some(home)),
+            "~/work/notes"
+        );
+        assert_eq!(
+            tilde_path_with_home(Path::new("/home/username/x"), Some(home)),
+            "/home/username/x"
+        );
+        assert_eq!(
+            tilde_path_with_home(Path::new("/srv/data"), None),
+            "/srv/data"
+        );
+    }
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let unique = format!(

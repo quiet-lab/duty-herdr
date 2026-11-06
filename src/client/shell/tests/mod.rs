@@ -51,6 +51,9 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             zoomed: false,
             focused: true,
             agent_status: AgentStatus::Idle,
+            place: None,
+            agent_label: None,
+            foreground_process: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),
@@ -61,6 +64,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             foreground_cwd: Some("/repo".into()),
             focused: true,
             right_click_passthrough: false,
+            foreground_process: None,
         }],
         agents: Vec::new(),
         commands: Vec::new(),
@@ -262,5 +266,6 @@ mod link_hover;
 mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
+mod space_labels;
 mod startup_overlays;
 mod status_frames;

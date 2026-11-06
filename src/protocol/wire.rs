@@ -1056,6 +1056,20 @@ pub struct ClientShellTab {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// Repository name of the Git checkout holding the tab's root pane, or that
+    /// pane's cwd with `~` when it is outside Git. The first tab names the
+    /// workspace. Optional in `shell.snapshot.v1`: older servers omit it, older
+    /// clients ignore it. Not skipped when empty because the binary snapshot
+    /// variant cannot omit fields.
+    #[serde(default)]
+    pub place: Option<String>,
+    /// Display name of the agent detected in this tab, preferring the tab's
+    /// focused pane. Optional like `place`.
+    #[serde(default)]
+    pub agent_label: Option<String>,
+    /// Foreground process name of the tab's focused pane. Optional like `place`.
+    #[serde(default)]
+    pub foreground_process: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1068,6 +1082,10 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Optional in `shell.snapshot.v1`: older servers omit it, older clients ignore it.
+    /// Not skipped when empty because the binary snapshot variant cannot omit fields.
+    #[serde(default)]
+    pub foreground_process: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2845,6 +2863,9 @@ mod tests {
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                place: Some("repo".into()),
+                agent_label: None,
+                foreground_process: Some("nvim".into()),
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
@@ -2855,6 +2876,7 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                foreground_process: Some("nvim".into()),
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {
