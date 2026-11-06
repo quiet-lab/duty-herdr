@@ -22,6 +22,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) tab_bar: crate::config::TabBarConfig,
+    pub(super) follow_blocked: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
@@ -969,6 +970,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+    pub(super) follow_blocked: super::follow_blocked::FollowBlocked,
 }
 
 pub(super) fn product_announcement_state(
@@ -1138,6 +1140,7 @@ impl ClientShellState {
             endpoint_error: None,
             endpoint_error_deadline: None,
             dismissed_product_announcement: None,
+            follow_blocked: Default::default(),
         }
     }
 

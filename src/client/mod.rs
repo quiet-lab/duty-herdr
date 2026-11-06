@@ -1976,7 +1976,9 @@ async fn run_client_loop(
                                 if let Some(frame) = state.shell.as_mut().and_then(|shell| {
                                     shell.compose(state.reported_size.0, state.reported_size.1)
                                 }) {
-                                    state.present_frame(frame);
+                                    // Follow actions exist only for a projected snapshot,
+                                    // which install_client_shell_snapshot presents this way.
+                                    state.present_frozen_chrome(frame);
                                 }
                             }
                         } else {
@@ -2178,7 +2180,7 @@ async fn run_client_loop(
                                 })
                             })
                             .flatten();
-                        install_client_shell_snapshot(
+                        let follow_actions = install_client_shell_snapshot(
                             &mut state,
                             &endpoint_id,
                             snapshot,
@@ -2186,6 +2188,25 @@ async fn run_client_loop(
                             &mut write_stream,
                             &mut prefix_input_source,
                         )?;
+                        if !follow_actions.is_empty() {
+                            let (_, repaint) = dispatch_client_shell_actions(
+                                follow_actions,
+                                &mut endpoint_commands,
+                                &mut write_stream,
+                                state.shell.as_mut(),
+                                &mut state.detached_process_children,
+                                &mut scheduled_activation,
+                            )?;
+                            if repaint {
+                                if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                                    shell.compose(state.reported_size.0, state.reported_size.1)
+                                }) {
+                                    // Follow actions exist only for a projected snapshot,
+                                    // which install_client_shell_snapshot presents this way.
+                                    state.present_frozen_chrome(frame);
+                                }
+                            }
+                        }
                         if matches!(
                             activation_progress,
                             Some(endpoint::SurfaceActivationProgress::Ready)

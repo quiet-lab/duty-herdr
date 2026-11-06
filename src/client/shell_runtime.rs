@@ -680,14 +680,15 @@ pub(super) fn install_client_shell_snapshot(
     projection_pending: bool,
     endpoints: &mut endpoint::EndpointRegistry,
     prefix_input_source: &mut impl crate::platform::PrefixInputSource,
-) -> Result<(), ClientError> {
+) -> Result<Vec<shell::ClientShellAction>, ClientError> {
     let Some(connection) = endpoints.connection(endpoint_id) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let generation = connection.generation;
     let project_snapshot =
         !projection_pending && endpoints.active_id() == endpoint_id && connection.surface_active;
     let pixel_mouse_available = state.pixel_mouse_available();
+    let mut follow_actions = Vec::new();
     let (composed, resize, graphics_cleanup) = if let Some(shell) = &mut state.shell {
         let waits_for_selected_surface = projection_pending
             || (endpoints.active_id() == endpoint_id
@@ -699,6 +700,7 @@ pub(super) fn install_client_shell_snapshot(
         }
         if project_snapshot {
             shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
+            follow_actions = shell.follow_blocked_after_snapshot();
         } else {
             shell.cache_endpoint_snapshot_inactive_for_generation(
                 endpoint_id,
@@ -737,7 +739,7 @@ pub(super) fn install_client_shell_snapshot(
             state.present_frozen_chrome(frame);
         }
     }
-    Ok(())
+    Ok(follow_actions)
 }
 
 pub(super) fn finish_client_shell_input(

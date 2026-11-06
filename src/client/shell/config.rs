@@ -131,6 +131,7 @@ impl ClientShellConfig {
             tab_bar_position: config.ui.tab_bar_position,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             tab_bar: config.ui.tab_bar,
+            follow_blocked: config.ui.follow_blocked.enabled,
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
@@ -361,6 +362,7 @@ impl ClientShellConfig {
                 self.tab_bar_position = ui.tab_bar_position;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
                 self.tab_bar = ui.tab_bar;
+                self.follow_blocked = ui.follow_blocked.enabled;
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
@@ -495,6 +497,7 @@ mod tests {
         let mut next = Config::default();
         next.ui.sidebar_width = 31;
         next.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+        next.ui.follow_blocked.enabled = true;
         next.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
         next.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
         next.ui.status_icons.working = Some("🟡".into());
@@ -506,6 +509,7 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(shell.sidebar_width, 31);
         assert_eq!(shell.tab_bar_position, TabBarPositionConfig::Bottom);
+        assert!(shell.follow_blocked);
         assert_eq!(
             shell.agent_panel_sort,
             crate::config::AgentPanelSortConfig::Priority
