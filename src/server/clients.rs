@@ -106,6 +106,12 @@ impl ClientShellLocation {
         self.active_tab_ids.insert(workspace_id, tab_id);
     }
 
+    /// Makes `tab_id` this client's active tab of `workspace_id` without
+    /// changing which workspace the client looks at.
+    pub(crate) fn activate_tab(&mut self, workspace_id: String, tab_id: String) {
+        self.active_tab_ids.insert(workspace_id, tab_id);
+    }
+
     pub(crate) fn reconcile(&mut self, topology: &ClientShellTopology) {
         self.active_tab_ids.retain(|workspace_id, tab_id| {
             topology.active_tab_ids.contains_key(workspace_id)

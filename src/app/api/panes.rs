@@ -1,9 +1,9 @@
 use bytes::Bytes;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
-    PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
+    EventData, EventEnvelope, EventKind, PaneActivateResult, PaneClearAgentAuthorityParams,
+    PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams,
+    PaneCurrentParams, PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
     PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
     PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
     PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
@@ -504,6 +504,47 @@ impl App {
             return pane_not_found(id, &target.pane_id);
         };
         encode_success(id, ResponseResult::PaneInfo { pane })
+    }
+
+    /// Focuses a pane inside its workspace without moving any client to it.
+    pub(super) fn handle_pane_activate(&mut self, id: String, target: PaneTarget) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let Some(activation) = self.state.activate_pane_in_workspace(ws_idx, pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let workspace_focused = self.state.active == Some(ws_idx);
+        if workspace_focused {
+            self.state.mark_active_tab_seen();
+            self.state.mode = crate::app::Mode::Terminal;
+        }
+        let zoomed = self.state.workspaces[ws_idx]
+            .tabs
+            .get(activation.tab_idx)
+            .is_some_and(|tab| tab.zoomed);
+        let (Some(pane), Some(tab_id)) = (
+            self.pane_info(ws_idx, pane_id),
+            self.public_tab_id(ws_idx, activation.tab_idx),
+        ) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        encode_success(
+            id,
+            ResponseResult::PaneActivate {
+                activation: PaneActivateResult {
+                    changed: activation.tab_changed || activation.focus_changed,
+                    tab_changed: activation.tab_changed,
+                    focus_changed: activation.focus_changed,
+                    pane_id: pane.pane_id.clone(),
+                    workspace_id: pane.workspace_id.clone(),
+                    tab_id,
+                    zoomed,
+                    workspace_focused,
+                    pane: Box::new(pane),
+                },
+            },
+        )
     }
 
     pub(super) fn handle_pane_layout(&mut self, id: String, params: PaneLayoutParams) -> String {
@@ -4697,5 +4738,123 @@ mod tests {
 
             assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
         }
+    }
+
+    fn activate_response(app: &mut App, pane_id: &str) -> PaneActivateResult {
+        let response = app.handle_pane_activate(
+            "req".into(),
+            PaneTarget {
+                pane_id: pane_id.into(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneActivate { activation } = success.result else {
+            panic!("expected pane activate response: {response}");
+        };
+        activation
+    }
+
+    fn app_with_background_workspace() -> (App, PaneId, PaneId) {
+        let mut app = app_with_linked_worktree();
+        let mut background = Workspace::test_new("background");
+        let second_tab = background.test_add_tab(Some("second"));
+        background.switch_tab(second_tab);
+        let second_root = background.tabs[second_tab].root_pane;
+        let second_split = background.test_split(ratatui::layout::Direction::Horizontal);
+        background.tabs[second_tab].layout.focus_pane(second_root);
+        background.switch_tab(0);
+        app.state.workspaces.push(background);
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.accept_current_focus_without_events();
+        (app, second_root, second_split)
+    }
+
+    #[test]
+    fn api_pane_activate_in_background_workspace_keeps_client_workspace() {
+        let (mut app, _, second_split) = app_with_background_workspace();
+        let split_public = app.public_pane_id(1, second_split).unwrap();
+
+        let activation = activate_response(&mut app, &split_public);
+
+        assert!(activation.changed && activation.tab_changed && activation.focus_changed);
+        assert_eq!(activation.pane_id, split_public);
+        assert_eq!(activation.workspace_id, app.public_workspace_id(1));
+        assert_eq!(activation.tab_id, app.public_tab_id(1, 1).unwrap());
+        assert!(!activation.zoomed);
+        assert!(!activation.workspace_focused);
+        assert!(
+            !activation.pane.focused,
+            "pane info keeps the session-wide focus meaning"
+        );
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.workspaces[1].active_tab, 1);
+        assert_eq!(
+            app.state.workspaces[1].focused_pane_id(),
+            Some(second_split)
+        );
+        app.accept_current_focus_with_api_events();
+        assert!(
+            app.event_hub.events_after(0).is_empty(),
+            "no session-wide focus event for a background workspace"
+        );
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn api_pane_activate_in_focused_workspace_focuses_pane() {
+        let (mut app, _, second_split) = app_with_background_workspace();
+        app.state.switch_workspace(1);
+        app.accept_current_focus_without_events();
+        let split_public = app.public_pane_id(1, second_split).unwrap();
+
+        let activation = activate_response(&mut app, &split_public);
+
+        assert!(activation.changed);
+        assert!(activation.workspace_focused);
+        assert!(activation.pane.focused);
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert_eq!(app.state.active, Some(1));
+        assert_eq!(
+            app.state.workspaces[1].focused_pane_id(),
+            Some(second_split)
+        );
+
+        let again = activate_response(&mut app, &split_public);
+        assert!(!again.changed && !again.tab_changed && !again.focus_changed);
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn api_pane_activate_in_zoomed_tab_keeps_zoom() {
+        let (mut app, second_root, second_split) = app_with_background_workspace();
+        app.state.workspaces[1].tabs[1].zoomed = true;
+        let split_public = app.public_pane_id(1, second_split).unwrap();
+
+        let activation = activate_response(&mut app, &split_public);
+
+        assert!(activation.zoomed);
+        assert!(app.state.workspaces[1].tabs[1].zoomed);
+        assert_ne!(second_root, second_split);
+        assert_eq!(
+            app.state.workspaces[1].focused_pane_id(),
+            Some(second_split)
+        );
+    }
+
+    #[test]
+    fn api_pane_activate_unknown_pane_is_not_found() {
+        let (mut app, _, _) = app_with_background_workspace();
+
+        let response = app.handle_pane_activate(
+            "req".into(),
+            PaneTarget {
+                pane_id: "w9:p9".into(),
+            },
+        );
+
+        assert_eq!(metadata_error_code(&response), "pane_not_found");
+        assert_eq!(app.state.workspaces[1].active_tab, 0);
     }
 }

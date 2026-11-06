@@ -2,6 +2,8 @@ use super::*;
 
 mod event_fairness;
 mod native_graphics;
+#[path = "pane_activate.rs"]
+mod pane_activate_tests;
 #[path = "pane_move.rs"]
 mod pane_move_tests;
 #[path = "pane_graphics.rs"]
