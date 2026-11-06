@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
+mod follow_blocked;
 mod io;
 mod keybinds;
 mod model;

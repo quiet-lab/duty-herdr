@@ -1179,6 +1179,12 @@
           "description": "Frame period spread for the unknown state from 0.0 to 0.5. With frame_phase = \"per_row\", each row gets its own frame period: the frame interval of the state times a stable factor between 1 - spread and 1 + spread. Set frame_speed_spread to a single number to apply it to every state, or to a table with the keys idle, working, blocked, done and unknown; omitted states use 0.0."
         },
         {
+          "key": "ui.follow_blocked",
+          "type": "table",
+          "default": "{ enabled = false }",
+          "description": "Follow agent dialogs. enabled (boolean, default false): when an agent pane enters blocked, the client focuses its workspace, tab and pane (or the pane named by the agent's input_pane token in the same tab), visits further dialogs in the order they entered blocked, and returns to the workspace it started from when none is left and that workspace still exists. Leaving the dialog manually ends the chain; the next dialog resumes the queue."
+        },
+        {
           "key": "ui.cursor_shape_by_screen",
           "type": "table of cursor shape rules",
           "default": "{}",

@@ -1416,6 +1416,8 @@ pub struct UiConfig {
     pub tab_bar_position: TabBarPositionConfig,
     /// Colors of the active and inactive tabs. Unset keeps the theme colors.
     pub tab_bar: super::tab_bar::TabBarConfig,
+    /// Switch the active workspace to agent panes waiting in `blocked`. Off by default.
+    pub follow_blocked: super::follow_blocked::FollowBlockedConfig,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
     pub tab_bar_right: Vec<TabBarRightEntryConfig>,
     /// Text inserted between visible right-side tab bar entries. Default: one space.
@@ -1662,6 +1664,7 @@ impl Default for UiConfig {
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar: super::tab_bar::TabBarConfig::default(),
+            follow_blocked: super::follow_blocked::FollowBlockedConfig::default(),
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),

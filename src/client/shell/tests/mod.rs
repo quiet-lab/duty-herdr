@@ -258,6 +258,7 @@ mod close_tab;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod follow_blocked;
 mod graphics;
 mod input_conformance;
 #[path = "input.rs"]
