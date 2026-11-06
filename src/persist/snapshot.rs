@@ -59,6 +59,9 @@ pub struct WorkspaceSnapshot {
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_workspace_id: Option<String>,
+    /// Child `symbol`/`color` pinned by Herdr; see `crate::workspace_symbols`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_tokens: Option<crate::workspace_symbols::AssignedWorkspaceTokens>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -172,6 +175,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             identity_cwd,
             worktree_space: None,
             parent_workspace_id: None,
+            assigned_tokens: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -311,6 +315,7 @@ fn capture_workspace(
         identity_cwd,
         worktree_space: ws.worktree_space.clone(),
         parent_workspace_id: ws.parent_workspace_id.clone(),
+        assigned_tokens: ws.assigned_tokens.clone(),
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -733,6 +738,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
                 worktree_space: None,
                 parent_workspace_id: None,
+                assigned_tokens: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -977,6 +983,35 @@ mod tests {
             json.get("parent_workspace_id").is_none(),
             "a root must not add the field to the saved session"
         );
+    }
+
+    #[test]
+    fn capture_contract_tracks_assigned_workspace_tokens() {
+        let mut state = state_with_workspaces(&["parent", "child"]);
+        let assigned = crate::workspace_symbols::AssignedWorkspaceTokens {
+            symbol: Some("🦄".into()),
+            color: Some("#111111".into()),
+        };
+        state.workspaces[1].assigned_tokens = Some(assigned.clone());
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(snapshot.workspaces[0].assigned_tokens, None);
+        assert_eq!(
+            snapshot.workspaces[1].assigned_tokens,
+            Some(assigned.clone())
+        );
+        let root = serde_json::to_value(&snapshot.workspaces[0]).unwrap();
+        assert!(
+            root.get("assigned_tokens").is_none(),
+            "a root must not add the field to the saved session"
+        );
+        let child = serde_json::to_value(&snapshot.workspaces[1]).unwrap();
+        assert_eq!(
+            child["assigned_tokens"],
+            serde_json::json!({"symbol": "🦄", "color": "#111111"})
+        );
+        let read: WorkspaceSnapshot = serde_json::from_value(child).unwrap();
+        assert_eq!(read.assigned_tokens, Some(assigned));
     }
 
     #[test]
@@ -1454,6 +1489,7 @@ mod tests {
                 identity_cwd: PathBuf::from("/tmp"),
                 worktree_space: None,
                 parent_workspace_id: None,
+                assigned_tokens: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),

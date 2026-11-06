@@ -822,6 +822,53 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_tokens_prefer_reported_workspace_tokens_over_herdr_symbols() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.workspace_symbols.outside]
+main = "🏠"
+tasks = ["🦄"]
+colors = ["#111111"]
+"##,
+        )
+        .unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![
+            crate::workspace::Workspace::test_new("root"),
+            crate::workspace::Workspace::test_new("child"),
+        ];
+        app.state.active = Some(0);
+        let parent_id = app.state.workspaces[0].id.clone();
+        app.state.workspaces[1].parent_workspace_id = Some(parent_id);
+        app.state.assign_child_workspace_tokens(1, 0);
+        app.state.workspaces[1].metadata_tokens.patch(
+            std::collections::HashMap::from([("symbol".into(), Some("🥑".into()))]),
+            None,
+            std::time::Instant::now(),
+        );
+
+        let shell = snapshot(&app, "boot", 1, None, None);
+        let token = |ws: usize, key: &str| {
+            shell.workspaces[ws]
+                .tokens
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(token(0, "symbol"), Some("🏠"));
+        assert_eq!(token(0, "color"), None);
+        assert_eq!(token(1, "symbol"), Some("🥑"));
+        assert_eq!(token(1, "color"), Some("#111111"));
+    }
+
+    #[test]
     fn split_hits_follow_released_border_and_gap_geometry() {
         let horizontal = crate::layout::SplitBorder {
             pos: 20,

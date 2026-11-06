@@ -81,6 +81,10 @@ impl MetadataTokens {
         keys.len()
     }
 
+    pub(crate) fn value(&self, key: &str) -> Option<&str> {
+        self.entries.get(key).map(|token| token.value.as_str())
+    }
+
     pub(crate) fn values(&self) -> HashMap<String, String> {
         self.entries
             .iter()

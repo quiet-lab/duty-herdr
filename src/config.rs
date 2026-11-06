@@ -9,6 +9,7 @@ mod sound;
 mod tab_bar;
 mod theme;
 mod window_title;
+mod workspace_symbols;
 mod write;
 
 pub use self::{
@@ -39,6 +40,7 @@ pub use self::{
     tab_bar::TabBarRightEntryConfig,
     theme::{parse_color, CustomThemeColors, ModeThemeColors, ThemeConfig, THEME_NAMES},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
+    workspace_symbols::{WorkspaceColor, WorkspaceSymbol, WorkspaceSymbolsConfig},
 };
 
 pub(crate) use self::keybinds::parse_key_combo;

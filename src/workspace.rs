@@ -219,6 +219,9 @@ pub struct Workspace {
     /// Explicit parent workspace id; one nesting level, see `crate::workspace_tree`.
     pub parent_workspace_id: Option<String>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
+    /// `symbol`/`color` pinned when the workspace became a child; see
+    /// `crate::workspace_symbols`. `None` for a root, which derives `main`.
+    pub(crate) assigned_tokens: Option<crate::workspace_symbols::AssignedWorkspaceTokens>,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
     pub public_pane_numbers: HashMap<PaneId, usize>,
@@ -286,6 +289,7 @@ impl Workspace {
             worktree_space: None,
             parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            assigned_tokens: None,
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -439,6 +443,7 @@ impl Workspace {
                 worktree_space: None,
                 parent_workspace_id: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+                assigned_tokens: None,
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
                 next_public_pane_number: 2,
@@ -1241,6 +1246,7 @@ impl Workspace {
             worktree_space: None,
             parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            assigned_tokens: None,
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
