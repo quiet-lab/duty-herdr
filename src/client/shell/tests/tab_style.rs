@@ -215,3 +215,60 @@ fn spaces_header_and_active_tab_row_follow_the_active_rule() {
         state.config.palette.sidebar_bg
     );
 }
+
+const FALLBACK_AGENTS: &str = r##"[ui.sidebar.agents]
+rows = [["state_icon", { token = "tab", fg = "$panel", bg = "$color|#ffffff", rules = [{ active = true, fg = "$color|#ffffff", bg = "$panel" }] }, "agent"]]
+[ui.sidebar.spaces]
+rows = [["state_icon", { token = "workspace", fg = "$color|#ffffff" }]]
+"##;
+
+const WHITE: Color = Color::Rgb(255, 255, 255);
+
+fn without_color_token(mut projected: ClientShellSnapshot) -> ClientShellSnapshot {
+    projected.workspaces[0]
+        .tokens
+        .retain(|(name, _)| name != "color");
+    projected
+}
+
+#[test]
+fn fallback_color_keeps_labels_visible_without_color_token() {
+    let config: Config = toml::from_str(FALLBACK_AGENTS).expect("config");
+
+    // Active tab: panel background, white text.
+    let (state, buffer) = compose_buffer(&config, without_color_token(two_tab_snapshot(false)));
+    let rect = state.hits.agents[0].0;
+    let tab = column_of(&buffer, rect, "@ herdr");
+    assert_eq!(buffer[(tab, rect.y)].fg, WHITE);
+    assert_eq!(buffer[(rect.x, rect.y)].bg, state.config.palette.sidebar_bg);
+    let space = state.hits.workspaces[0].rect;
+    let label = column_of(&buffer, space, "@ herdr");
+    assert_eq!(buffer[(label, space.y)].fg, WHITE);
+
+    // Inactive tab: white fill with panel text.
+    let (state, buffer) = compose_buffer(&config, without_color_token(two_tab_snapshot(true)));
+    let rect = state.hits.agents[0].0;
+    let tab = column_of(&buffer, rect, "@ herdr");
+    assert_eq!(buffer[(tab, rect.y)].fg, state.config.palette.panel_bg);
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, WHITE, "{x}");
+    }
+}
+
+#[test]
+fn fallback_color_yields_to_the_color_token() {
+    let config: Config = toml::from_str(FALLBACK_AGENTS).expect("config");
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(false));
+    let rect = state.hits.agents[0].0;
+    let tab = column_of(&buffer, rect, "@ herdr");
+    assert_eq!(buffer[(tab, rect.y)].fg, RED);
+    let space = state.hits.workspaces[0].rect;
+    let label = column_of(&buffer, space, "@ herdr");
+    assert_eq!(buffer[(label, space.y)].fg, RED);
+
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(true));
+    let rect = state.hits.agents[0].0;
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, RED, "{x}");
+    }
+}
