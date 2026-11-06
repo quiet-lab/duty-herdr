@@ -1095,7 +1095,7 @@ impl ClientShellState {
                 endpoint_id,
                 workspace_id,
             }) => {
-                if self.focus_or_activate(
+                if self.focus_selection(
                     endpoint_id,
                     ClientEndpointFocusTarget::Workspace(workspace_id),
                     outcome,
@@ -1108,7 +1108,7 @@ impl ClientShellState {
                 endpoint_id,
                 pane_id,
             }) => {
-                if self.focus_or_activate(
+                if self.focus_selection(
                     endpoint_id,
                     ClientEndpointFocusTarget::Pane(pane_id),
                     outcome,

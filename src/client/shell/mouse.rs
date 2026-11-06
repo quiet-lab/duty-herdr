@@ -2178,22 +2178,19 @@ impl ClientShellState {
                     .agents
                     .iter()
                     .find(|(rect, _)| super::contains(*rect, point))
-                    .map(|(_, pane_id)| {
-                        self.snapshot.as_deref().map_or_else(
-                            || pane_id.clone(),
-                            |snapshot| {
-                                super::input_focus::focus_pane_for_target(snapshot, pane_id)
-                                    .to_owned()
-                            },
-                        )
-                    });
+                    .map(|(_, pane_id)| pane_id.clone());
                 if let Some(pane_id) = agent_pane_id {
-                    self.push_endpoint_method(
+                    let method =
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                             pane_id,
-                        }),
-                        outcome,
-                    );
+                        });
+                    let method = match self.snapshot.as_deref() {
+                        Some(snapshot) => {
+                            super::input_focus::selection_focus_method(snapshot, method)
+                        }
+                        None => method,
+                    };
+                    self.push_endpoint_method(method, outcome);
                     return;
                 }
                 let scrollbar_hit = self

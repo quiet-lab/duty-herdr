@@ -12,7 +12,8 @@ use super::*;
 pub(super) const INPUT_PANE_TOKEN: &str = "input_pane";
 
 /// The agent's live input pane: the `input_pane` token names an existing pane,
-/// other than the agent pane, in the agent's tab.
+/// other than the agent pane, in the agent's tab, and that tab is not zoomed
+/// on one pane.
 fn agent_input_pane<'a>(
     snapshot: &'a crate::protocol::ClientShellSnapshot,
     agent: &'a crate::protocol::ClientShellAgent,
@@ -22,7 +23,12 @@ fn agent_input_pane<'a>(
         .iter()
         .find(|(name, _)| name == INPUT_PANE_TOKEN)
         .map(|(_, value)| value.as_str())?;
-    (input_pane_id != agent.pane_id
+    let zoomed = snapshot
+        .tabs
+        .iter()
+        .any(|tab| tab.tab_id == agent.tab_id && tab.zoomed);
+    (!zoomed
+        && input_pane_id != agent.pane_id
         && snapshot
             .panes
             .iter()
@@ -30,28 +36,30 @@ fn agent_input_pane<'a>(
     .then_some(input_pane_id)
 }
 
-/// Pane to focus for a selection resolved to `target_pane_id`: the input pane
-/// of that agent when it has one, otherwise the target itself.
-pub(super) fn focus_pane_for_target<'a>(
+/// Input pane of the agent in `target_pane_id`, when that agent has one.
+fn input_pane_for_target<'a>(
     snapshot: &'a crate::protocol::ClientShellSnapshot,
-    target_pane_id: &'a str,
-) -> &'a str {
+    target_pane_id: &str,
+) -> Option<&'a str> {
     snapshot
         .agents
         .iter()
         .find(|agent| agent.pane_id == target_pane_id)
         .and_then(|agent| agent_input_pane(snapshot, agent))
-        .unwrap_or(target_pane_id)
 }
 
-/// Input pane for a workspace selection: the first live agent input pane of
-/// the workspace's active tab, in pane order. The snapshot does not name the
-/// focused pane of an unfocused workspace's tab, so the tab's agent with an
-/// input pane is the target.
+/// Input pane for a workspace selection.
+///
+/// In the focused workspace the target is the focused pane. The snapshot does
+/// not name the focused pane of another workspace's tab, so there the target is
+/// the first agent of the active tab, in pane order, that has an input pane.
 fn workspace_input_pane<'a>(
     snapshot: &'a crate::protocol::ClientShellSnapshot,
     workspace_id: &str,
 ) -> Option<&'a str> {
+    if snapshot.focused_workspace_id.as_deref() == Some(workspace_id) {
+        return input_pane_for_target(snapshot, snapshot.focused_pane_id.as_deref()?);
+    }
     let workspace = snapshot
         .workspaces
         .iter()
@@ -63,29 +71,17 @@ fn workspace_input_pane<'a>(
         .find_map(|agent| agent_input_pane(snapshot, agent))
 }
 
-/// Focus target for a selected Spaces or Agents row.
-pub(super) fn selection_focus_target(
-    snapshot: Option<&crate::protocol::ClientShellSnapshot>,
-    target: ClientEndpointFocusTarget,
-) -> ClientEndpointFocusTarget {
-    let Some(snapshot) = snapshot else {
-        return target;
-    };
-    match &target {
+/// Replacement pane for a selected Spaces or Agents row, if the rule applies.
+pub(super) fn selection_input_pane<'a>(
+    snapshot: &'a crate::protocol::ClientShellSnapshot,
+    target: &ClientEndpointFocusTarget,
+) -> Option<&'a str> {
+    match target {
         ClientEndpointFocusTarget::Workspace(workspace_id) => {
-            workspace_input_pane(snapshot, workspace_id).map_or(target.clone(), |pane_id| {
-                ClientEndpointFocusTarget::Pane(pane_id.to_owned())
-            })
+            workspace_input_pane(snapshot, workspace_id)
         }
-        ClientEndpointFocusTarget::Pane(pane_id) => {
-            let focus = focus_pane_for_target(snapshot, pane_id);
-            if focus == pane_id {
-                target.clone()
-            } else {
-                ClientEndpointFocusTarget::Pane(focus.to_owned())
-            }
-        }
-        _ => target,
+        ClientEndpointFocusTarget::Pane(pane_id) => input_pane_for_target(snapshot, pane_id),
+        _ => None,
     }
 }
 
@@ -95,18 +91,16 @@ pub(super) fn selection_focus_method(
     method: crate::api::schema::Method,
 ) -> crate::api::schema::Method {
     use crate::api::schema::{Method, PaneTarget};
-    let target = match method {
-        Method::WorkspaceFocus(target) => ClientEndpointFocusTarget::Workspace(target.workspace_id),
-        Method::PaneFocus(target) => ClientEndpointFocusTarget::Pane(target.pane_id),
-        other => return other,
+    let input_pane = match &method {
+        Method::WorkspaceFocus(target) => workspace_input_pane(snapshot, &target.workspace_id),
+        Method::PaneFocus(target) => input_pane_for_target(snapshot, &target.pane_id),
+        _ => None,
     };
-    match selection_focus_target(Some(snapshot), target) {
-        ClientEndpointFocusTarget::Workspace(workspace_id) => {
-            Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget { workspace_id })
-        }
-        ClientEndpointFocusTarget::Pane(pane_id) => Method::PaneFocus(PaneTarget { pane_id }),
-        _ => unreachable!("selection focus keeps workspace and pane targets"),
-    }
+    input_pane.map_or(method, |pane_id| {
+        Method::PaneFocus(PaneTarget {
+            pane_id: pane_id.to_owned(),
+        })
+    })
 }
 
 /// Pane the Agents list treats as current: a focused input pane maps back to
@@ -123,13 +117,22 @@ pub(super) fn selection_pane_for_focused<'a>(
 }
 
 impl ClientShellState {
-    /// Snapshot of an endpoint: the current one when active, else its last received one.
+    /// Snapshot the rule may read for a selection on `endpoint_id`.
+    ///
+    /// Workspace selections on an inactive endpoint keep their target: its last
+    /// snapshot may name an input pane closed since, and a stale pane target
+    /// would fail where the workspace target succeeds. Agent rows come from that
+    /// same snapshot, so their pane targets already share its age.
     fn selection_snapshot(
         &self,
         endpoint_id: &ClientEndpointId,
+        target: &ClientEndpointFocusTarget,
     ) -> Option<&crate::protocol::ClientShellSnapshot> {
         if *endpoint_id == self.active_endpoint_id {
             return self.snapshot.as_deref();
+        }
+        if matches!(target, ClientEndpointFocusTarget::Workspace(_)) {
+            return None;
         }
         self.endpoints
             .iter()
@@ -144,7 +147,12 @@ impl ClientShellState {
         target: ClientEndpointFocusTarget,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        let target = selection_focus_target(self.selection_snapshot(&endpoint_id), target);
+        let target = self
+            .selection_snapshot(&endpoint_id, &target)
+            .and_then(|snapshot| selection_input_pane(snapshot, &target))
+            .map_or(target, |pane_id| {
+                ClientEndpointFocusTarget::Pane(pane_id.to_owned())
+            });
         self.focus_or_activate(endpoint_id, target, outcome)
     }
 }

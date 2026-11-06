@@ -23,6 +23,12 @@ fn agent(pane_id: &str, tab_id: &str, input_pane: Option<&str>) -> ClientShellAg
     }
 }
 
+/// Pane a selection of the agent row `target` focuses.
+fn focus_pane<'a>(snapshot: &'a ClientShellSnapshot, target: &'a str) -> &'a str {
+    rule::selection_input_pane(snapshot, &ClientEndpointFocusTarget::Pane(target.into()))
+        .unwrap_or(target)
+}
+
 fn pane(pane_id: &str, workspace_id: &str, tab_id: &str) -> ClientShellPane {
     let mut pane = snapshot().panes[0].clone();
     pane.pane_id = pane_id.into();
@@ -167,20 +173,20 @@ fn selection_without_input_token_keeps_the_previous_target() {
 #[test]
 fn input_token_outside_the_agent_tab_or_for_a_closed_pane_is_ignored() {
     let mut other_tab = input_snapshot(Some("pane_1"));
-    assert_eq!(rule::focus_pane_for_target(&other_tab, "pane_2"), "pane_2");
+    assert_eq!(focus_pane(&other_tab, "pane_2"), "pane_2");
     other_tab.agents[0].tokens = vec![("input_pane".into(), "pane_9".into())];
-    assert_eq!(rule::focus_pane_for_target(&other_tab, "pane_2"), "pane_2");
+    assert_eq!(focus_pane(&other_tab, "pane_2"), "pane_2");
     other_tab.agents[0].tokens = vec![("input_pane".into(), "pane_2".into())];
-    assert_eq!(rule::focus_pane_for_target(&other_tab, "pane_2"), "pane_2");
+    assert_eq!(focus_pane(&other_tab, "pane_2"), "pane_2");
     assert_eq!(
-        rule::selection_focus_target(
-            Some(&other_tab),
-            ClientEndpointFocusTarget::Workspace("ws_2".into()),
+        rule::selection_input_pane(
+            &other_tab,
+            &ClientEndpointFocusTarget::Workspace("ws_2".into()),
         ),
-        ClientEndpointFocusTarget::Workspace("ws_2".into())
+        None
     );
     // A non-agent target never redirects.
-    assert_eq!(rule::focus_pane_for_target(&other_tab, "pane_1"), "pane_1");
+    assert_eq!(focus_pane(&other_tab, "pane_1"), "pane_1");
 }
 
 #[test]
@@ -193,13 +199,13 @@ fn workspace_selection_uses_the_first_agent_input_pane_in_pane_order() {
     projected.agents.push(later);
 
     assert_eq!(
-        rule::selection_focus_target(
-            Some(&projected),
-            ClientEndpointFocusTarget::Workspace("ws_2".into()),
+        rule::selection_input_pane(
+            &projected,
+            &ClientEndpointFocusTarget::Workspace("ws_2".into()),
         ),
-        ClientEndpointFocusTarget::Pane("pane_3".into())
+        Some("pane_3")
     );
-    assert_eq!(rule::focus_pane_for_target(&projected, "pane_4"), "pane_5");
+    assert_eq!(focus_pane(&projected, "pane_4"), "pane_5");
 }
 
 #[test]
@@ -224,4 +230,28 @@ fn relative_agent_navigation_continues_from_the_agent_of_a_focused_input_pane() 
         &mut next,
     );
     assert!(is_pane_focus(single_focus_method(&next), "pane_4"));
+}
+
+#[test]
+fn focused_workspace_selection_starts_from_its_focused_pane() {
+    let mut projected = input_snapshot(Some("pane_3"));
+    projected.panes.push(pane("pane_4", "ws_2", "tab_2"));
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_2".into());
+    projected.focused_pane_id = Some("pane_4".into());
+    let workspace = ClientEndpointFocusTarget::Workspace("ws_2".into());
+    // A focused plain pane keeps the workspace focus.
+    assert_eq!(rule::selection_input_pane(&projected, &workspace), None);
+    projected.focused_pane_id = Some("pane_2".into());
+    assert_eq!(
+        rule::selection_input_pane(&projected, &workspace),
+        Some("pane_3")
+    );
+}
+
+#[test]
+fn zoomed_agent_tab_keeps_the_agent_pane() {
+    let mut projected = input_snapshot(Some("pane_3"));
+    projected.tabs[1].zoomed = true;
+    assert_eq!(focus_pane(&projected, "pane_2"), "pane_2");
 }

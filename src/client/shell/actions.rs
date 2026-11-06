@@ -927,6 +927,12 @@ impl ClientShellState {
                     _ => unreachable!("relative agent action"),
                 };
                 let pane_id = agents[next].clone();
+                let method = super::input_focus::selection_focus_method(
+                    snapshot,
+                    Method::PaneFocus(PaneTarget {
+                        pane_id: pane_id.clone(),
+                    }),
+                );
                 if !self
                     .hits
                     .agents
@@ -935,11 +941,7 @@ impl ClientShellState {
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }
-                let snapshot = self.snapshot.as_deref()?;
-                Some(super::input_focus::selection_focus_method(
-                    snapshot,
-                    Method::PaneFocus(PaneTarget { pane_id }),
-                ))
+                Some(method)
             }
             KeybindAction::MoveWorkspaceUp | KeybindAction::MoveWorkspaceDown => {
                 let placement = if action == KeybindAction::MoveWorkspaceUp {
@@ -960,12 +962,14 @@ impl ClientShellState {
                     .get(entries.get(index)?.index)?
                     .workspace_id
                     .clone();
-                self.reveal_workspace(&workspace_id);
-                let snapshot = self.snapshot.as_deref()?;
-                Some(super::input_focus::selection_focus_method(
+                let method = super::input_focus::selection_focus_method(
                     snapshot,
-                    Method::WorkspaceFocus(WorkspaceTarget { workspace_id }),
-                ))
+                    Method::WorkspaceFocus(WorkspaceTarget {
+                        workspace_id: workspace_id.clone(),
+                    }),
+                );
+                self.reveal_workspace(&workspace_id);
+                Some(method)
             }
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
                 let entries = self.navigation_workspace_entries(snapshot);
@@ -987,12 +991,14 @@ impl ClientShellState {
                 let workspace_id = snapshot.workspaces[entries[next].index]
                     .workspace_id
                     .clone();
-                self.reveal_workspace(&workspace_id);
-                let snapshot = self.snapshot.as_deref()?;
-                Some(super::input_focus::selection_focus_method(
+                let method = super::input_focus::selection_focus_method(
                     snapshot,
-                    Method::WorkspaceFocus(WorkspaceTarget { workspace_id }),
-                ))
+                    Method::WorkspaceFocus(WorkspaceTarget {
+                        workspace_id: workspace_id.clone(),
+                    }),
+                );
+                self.reveal_workspace(&workspace_id);
+                Some(method)
             }
             KeybindAction::SwitchTab(index) => {
                 let tabs = snapshot

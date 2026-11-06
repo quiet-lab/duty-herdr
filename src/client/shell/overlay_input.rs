@@ -301,7 +301,7 @@ impl ClientShellState {
             ClientNavigatorTarget::Workspace {
                 endpoint_id,
                 workspace_id,
-            } => self.focus_or_activate(
+            } => self.focus_selection(
                 endpoint_id,
                 ClientEndpointFocusTarget::Workspace(workspace_id),
                 outcome,
@@ -309,7 +309,7 @@ impl ClientShellState {
             ClientNavigatorTarget::Pane {
                 endpoint_id,
                 pane_id,
-            } => self.focus_or_activate(
+            } => self.focus_selection(
                 endpoint_id,
                 ClientEndpointFocusTarget::Pane(pane_id),
                 outcome,
