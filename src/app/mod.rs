@@ -700,6 +700,7 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
+        app.state.assign_missing_child_workspace_tokens();
         app.refresh_restored_workspace_git_metadata();
         app.sync_screen_cursor_rules();
         Ok(app)
@@ -764,6 +765,7 @@ impl App {
                 .get(idx)
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
+        app.state.assign_missing_child_workspace_tokens();
         app.refresh_restored_workspace_git_metadata();
         app.sync_screen_cursor_rules();
         Ok(app)

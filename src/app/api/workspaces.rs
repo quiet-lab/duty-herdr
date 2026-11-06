@@ -87,14 +87,8 @@ impl App {
                 .as_deref()
                 .and_then(|parent| self.parse_workspace_id(parent));
             self.state.workspaces[index].parent_workspace_id = parent_id;
-            match parent_index {
-                // A workspace joining a parent gets child tokens once.
-                Some(parent_index) => self
-                    .state
-                    .assign_child_workspace_tokens(index, parent_index),
-                // An explicit detach makes it a root again, showing `main`.
-                None => self.state.workspaces[index].assigned_tokens = None,
-            }
+            // A new parent gives a pair of its directory; a detach shows `main`.
+            self.state.reparent_workspace_tokens(index, parent_index);
             self.state.mark_session_dirty();
             self.emit_workspace_updated(index);
         }
@@ -1217,6 +1211,21 @@ colors = ["#111111", "#222222"]
                 symbol: Some("🦌".into()),
                 color: Some("#111111".into()),
             })
+        );
+        // The same parent again keeps the pinned pair.
+        set_parent(&mut app, 1, Some(0));
+        assert_eq!(
+            app.state.workspaces[1]
+                .assigned_tokens
+                .as_ref()
+                .and_then(|tokens| tokens.symbol.as_deref()),
+            Some("🦌")
+        );
+        // Another parent in a directory without a rule leaves no pair.
+        set_parent(&mut app, 1, Some(2));
+        assert_eq!(
+            app.state.workspaces[1].assigned_tokens,
+            Some(crate::workspace_symbols::AssignedWorkspaceTokens::default())
         );
         set_parent(&mut app, 1, None);
         assert_eq!(app.state.workspaces[1].assigned_tokens, None);
