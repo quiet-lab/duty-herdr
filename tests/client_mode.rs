@@ -1390,10 +1390,12 @@ fn client_shell_detaches_restores_and_freshly_reattaches_to_current_state() {
             .try_clone_reader()
             .expect("clone first client shell reader"),
     );
+    // Without an agent the manual workspace label is hidden: the spaces row
+    // shows the place (the cwd outside Git, truncated), not `shell-lifecycle`.
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             let output = read_output(&output_a);
-            output.contains("shell-lifecycle") && output.contains("SHELL_LIFECYCLE_INITIAL")
+            output.contains("herdr-client-t") && output.contains("SHELL_LIFECYCLE_INITIAL")
         }),
         "client shell should compose one coherent snapshot and pane surface; output: {:?}",
         read_output(&output_a)
@@ -1436,7 +1438,7 @@ fn client_shell_detaches_restores_and_freshly_reattaches_to_current_state() {
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             let output = read_output(&output_b);
-            output.contains("shell-lifecycle") && output.contains("SHELL_LIFECYCLE_DETACHED")
+            output.contains("herdr-client-t") && output.contains("SHELL_LIFECYCLE_DETACHED")
         }),
         "fresh client shell should receive current state and detached-period output; output: {:?}",
         read_output(&output_b)
