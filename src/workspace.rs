@@ -1099,6 +1099,31 @@ impl Workspace {
         }
     }
 
+    /// Place of the workspace: repository name of the cached Git checkout of the
+    /// first tab's root pane, or its cwd with `~` outside Git. Reads only the
+    /// cached Git identity, never the filesystem.
+    pub(crate) fn place_label(&self) -> String {
+        match &self.cached_git_space {
+            Some(space) => {
+                self::git::automatic_workspace_label(&self.cached_identity_cwd, &space.repo_root)
+            }
+            None => self::git::tilde_path(&self.cached_identity_cwd),
+        }
+    }
+
+    /// Place of another tab's root pane at `cwd`: the workspace repository name
+    /// while `cwd` lies inside the cached checkout, otherwise `cwd` with `~`.
+    /// Per-tab Git discovery would read the filesystem, so a tab in another
+    /// repository shows its path.
+    pub(crate) fn place_label_for(&self, cwd: &std::path::Path) -> String {
+        match &self.cached_git_space {
+            Some(space) if cwd.starts_with(&space.repo_root) => {
+                self::git::automatic_workspace_label(cwd, &space.repo_root)
+            }
+            _ => self::git::tilde_path(cwd),
+        }
+    }
+
     pub fn branch(&self) -> Option<String> {
         self.cached_git_branch.clone()
     }
@@ -1624,6 +1649,36 @@ mod tests {
         assert_eq!(auto_label, checkout.file_name().unwrap().to_str().unwrap());
 
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn place_label_uses_cached_git_root_name_or_path_outside_git() {
+        let mut ws = Workspace::test_new("place");
+        ws.cached_identity_cwd = PathBuf::from("/srv/plain/dir");
+        ws.cached_git_space = None;
+        assert_eq!(ws.place_label(), "/srv/plain/dir");
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/other")),
+            "/srv/other"
+        );
+
+        ws.cached_identity_cwd = PathBuf::from("/srv/code/herdr/src/ui");
+        ws.cached_git_space = Some(GitSpaceMetadata {
+            key: "/srv/code/herdr/.git".into(),
+            checkout_key: "/srv/code/herdr".into(),
+            repo_name: "herdr".into(),
+            repo_root: PathBuf::from("/srv/code/herdr"),
+            is_linked_worktree: false,
+        });
+        assert_eq!(ws.place_label(), "herdr");
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/code/herdr/docs")),
+            "herdr"
+        );
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/other")),
+            "/srv/other"
+        );
     }
 
     #[test]

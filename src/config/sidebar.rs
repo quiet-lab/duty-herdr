@@ -204,6 +204,15 @@ pub enum SpaceSidebarToken {
     Workspace,
     Branch,
     GitStatus,
+    /// Workspace metadata token `symbol`.
+    Symbol,
+    /// Repository name of the first tab's root pane, or its cwd with `~`.
+    Place,
+    /// Agent of the first tab while detected, otherwise the foreground process
+    /// of the first tab's focused pane.
+    App,
+    /// `<symbol> <place> · <app>`.
+    AutoLabel,
     Custom(String),
     Styled {
         token: Box<SpaceSidebarToken>,
@@ -373,6 +382,10 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::Workspace => "workspace".into(),
         SpaceSidebarToken::Branch => "branch".into(),
         SpaceSidebarToken::GitStatus => "git_status".into(),
+        SpaceSidebarToken::Symbol => "symbol".into(),
+        SpaceSidebarToken::Place => "place".into(),
+        SpaceSidebarToken::App => "app".into(),
+        SpaceSidebarToken::AutoLabel => "auto_label".into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
     }
@@ -470,6 +483,10 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
                 ("workspace", Self::Workspace),
                 ("branch", Self::Branch),
                 ("git_status", Self::GitStatus),
+                ("symbol", Self::Symbol),
+                ("place", Self::Place),
+                ("app", Self::App),
+                ("auto_label", Self::AutoLabel),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -594,6 +611,28 @@ mod tests {
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+    }
+
+    #[test]
+    fn parses_and_serializes_space_label_tokens() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.spaces]
+rows = [["state_icon", "symbol", { token = "place", fg = "$color" }, "app"], ["auto_label"]]
+"##,
+        )
+        .expect("space label tokens");
+        let rows = &config.ui.sidebar.spaces.rows;
+        assert_eq!(rows[0][1], SpaceSidebarToken::Symbol);
+        assert!(matches!(
+            &rows[0][2],
+            SpaceSidebarToken::Styled { token, .. } if **token == SpaceSidebarToken::Place
+        ));
+        assert_eq!(rows[0][3], SpaceSidebarToken::App);
+        assert_eq!(rows[1], vec![SpaceSidebarToken::AutoLabel]);
+        let encoded = toml::to_string(&config.ui.sidebar.spaces).expect("encode");
+        let decoded: SpacesSidebarConfig = toml::from_str(&encoded).expect("decode");
+        assert_eq!(&decoded.rows, rows);
     }
 
     #[test]

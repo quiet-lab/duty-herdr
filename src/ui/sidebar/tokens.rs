@@ -134,6 +134,10 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) ahead_behind: Option<(usize, usize)>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
     pub(crate) suppress_git_details: bool,
+    pub(crate) symbol: Option<&'a str>,
+    pub(crate) place: Option<&'a str>,
+    pub(crate) app: Option<&'a str>,
+    pub(crate) auto_label: Option<&'a str>,
 }
 
 pub(crate) fn space_rows(
@@ -165,6 +169,18 @@ pub(crate) fn space_rows(
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
                         SpaceSidebarToken::GitStatus => None,
+                        SpaceSidebarToken::Symbol => context
+                            .symbol
+                            .map(|value| ResolvedTokenKind::Custom(value.to_string())),
+                        SpaceSidebarToken::Place => context
+                            .place
+                            .map(|value| ResolvedTokenKind::Workspace(value.to_string())),
+                        SpaceSidebarToken::App => context
+                            .app
+                            .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                        SpaceSidebarToken::AutoLabel => context
+                            .auto_label
+                            .map(|value| ResolvedTokenKind::Workspace(value.to_string())),
                         SpaceSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -364,6 +380,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     ahead_behind: None,
                     suppress_git_details: false,
                     tokens: &entry.tokens,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
                 },
             );
             assert_eq!(spaces[0][0].style.dim, (value == "20").then_some(true));
@@ -413,6 +433,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: None,
                     suppress_git_details: false,
                     tokens: &entry.tokens,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
                 },
             );
             assert_eq!(rows.len(), count);
@@ -582,6 +606,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: Some((2, 1)),
                     tokens: &std::collections::HashMap::new(),
                     suppress_git_details: true,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
                 },
             ),
             vec![vec![
@@ -609,6 +637,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: None,
                     tokens: &tokens,
                     suppress_git_details: false,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
                 },
             ),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(
@@ -642,6 +674,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: None,
                     suppress_git_details: false,
                     tokens: &tokens,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
                 },
             )
         };
@@ -682,5 +718,60 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             assert_eq!(fg_of(&rows[0][0]), None);
             assert_eq!(fg_of(&rows[1][0]), None);
         }
+    }
+
+    #[test]
+    fn space_label_tokens_resolve_and_drop_when_missing() {
+        let config: SpacesSidebarConfig =
+            toml::from_str(r#"rows = [["symbol", "place", "app"], ["auto_label"]]"#).unwrap();
+        let tokens = std::collections::HashMap::new();
+        let context = |symbol, place, app, auto_label| SpaceTokenContext {
+            workspace: "repo",
+            branch: None,
+            state_text: "idle",
+            ahead_behind: None,
+            tokens: &tokens,
+            suppress_git_details: false,
+            symbol,
+            place,
+            app,
+            auto_label,
+        };
+        assert_eq!(
+            space_rows(
+                &config,
+                context(
+                    Some("🦦"),
+                    Some("herdr"),
+                    Some("nvim"),
+                    Some("🦦 herdr · nvim")
+                )
+            ),
+            vec![
+                vec![
+                    ResolvedToken::unstyled(ResolvedTokenKind::Custom("🦦".into())),
+                    ResolvedToken::unstyled(ResolvedTokenKind::Workspace("herdr".into())),
+                    ResolvedToken::unstyled(ResolvedTokenKind::Agent("nvim".into())),
+                ],
+                vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                    "🦦 herdr · nvim".into()
+                ))],
+            ]
+        );
+        assert_eq!(
+            space_rows(
+                &config,
+                context(None, Some("~/notes"), None, Some("~/notes"))
+            ),
+            vec![
+                vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                    "~/notes".into()
+                ))],
+                vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                    "~/notes".into()
+                ))],
+            ]
+        );
+        assert!(space_rows(&config, context(None, None, None, None)).is_empty());
     }
 }

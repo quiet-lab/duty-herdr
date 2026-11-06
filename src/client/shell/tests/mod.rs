@@ -51,6 +51,9 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             zoomed: false,
             focused: true,
             agent_status: AgentStatus::Idle,
+            place: None,
+            agent_label: None,
+            foreground_process: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),
@@ -264,5 +267,6 @@ mod link_hover;
 mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
+mod space_labels;
 mod startup_overlays;
 mod status_frames;

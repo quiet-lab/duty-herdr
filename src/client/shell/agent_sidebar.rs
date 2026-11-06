@@ -270,9 +270,10 @@ pub(super) fn agent_row(
         .iter()
         .filter(|candidate| candidate.workspace_id == agent.workspace_id)
         .count();
+    let symbol = super::labels::workspace_symbol(workspace);
     let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
+        .filter(|tab| tab_count > 1 || tab.custom_label || super::labels::tab_has_facts(tab))
+        .map(|tab| super::labels::tab_label(symbol, tab));
     let canonical_agent = agent
         .agent
         .as_deref()
@@ -296,7 +297,7 @@ pub(super) fn agent_row(
                 .tabs
                 .iter()
                 .find(|candidate| candidate.tab_id == workspace.active_tab_id)
-                .map(|tab| tab.label.as_str())
+                .map(|tab| super::labels::tab_label(symbol, tab))
         })
         .flatten();
     let agent_label = agent
@@ -320,8 +321,8 @@ pub(super) fn agent_row(
         crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,
-            tab: tab_label,
-            focused_tab: focused_tab_label,
+            tab: tab_label.as_deref(),
+            focused_tab: focused_tab_label.as_deref(),
             pane: agent
                 .title
                 .as_deref()
