@@ -1364,7 +1364,9 @@ impl AppState {
                 continue;
             }
 
+            let rules = &self.workspace_symbols;
             let ws = &mut self.workspaces[ws_idx];
+            let symbol_before = ws.herdr_tokens(rules).0.map(str::to_owned);
             if ws.cached_identity_cwd != result.resolved_identity_cwd {
                 ws.cached_identity_cwd = result.resolved_identity_cwd;
             }
@@ -1387,6 +1389,8 @@ impl AppState {
                 ws.cached_git_space = result.space;
                 changed = true;
             }
+            // A root's `main` symbol follows the admitted directory.
+            changed |= ws.herdr_tokens(rules).0 != symbol_before.as_deref();
         }
         changed
     }

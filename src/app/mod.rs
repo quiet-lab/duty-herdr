@@ -538,6 +538,9 @@ impl App {
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
+            workspace_symbols: crate::workspace_symbols::WorkspaceSymbolRules::from_config(
+                &config.ui.workspace_symbols,
+            ),
             next_agent_state_change_seq: 0,
             confirm_close: config.ui.confirm_close,
             pane_borders: config.ui.pane_borders,
@@ -936,6 +939,14 @@ impl App {
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
+                if self.state.set_workspace_symbol_rules(
+                    crate::workspace_symbols::WorkspaceSymbolRules::from_config(
+                        &config.ui.workspace_symbols,
+                    ),
+                ) {
+                    self.render_dirty.request_generic();
+                    self.render_notify.notify_one();
+                }
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
             }
