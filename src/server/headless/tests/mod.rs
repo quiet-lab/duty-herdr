@@ -332,7 +332,11 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
 
 fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<u8>>) {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("herd")];
+    let mut workspace = crate::workspace::Workspace::test_new("herd");
+    // Without an agent the `workspace` token is the automatic label.
+    workspace.cached_identity_cwd = "/srv/herd".into();
+    workspace.cached_git_space = None;
+    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
 
@@ -383,7 +387,10 @@ fn no_window_title(control_rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> bool {
 #[test]
 fn window_title_waits_for_a_foreground_client_to_exist() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("herd")];
+    let mut workspace = crate::workspace::Workspace::test_new("herd");
+    workspace.cached_identity_cwd = "/srv/herd".into();
+    workspace.cached_git_space = None;
+    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.configure_window_title("{workspace}");
 
@@ -408,7 +415,7 @@ fn window_title_waits_for_a_foreground_client_to_exist() {
 
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -420,7 +427,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&first_control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
 
     // ClientConnected assigns the foreground client directly rather than
@@ -442,7 +449,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
 
     assert_eq!(
         next_window_title(&second_control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -451,14 +458,12 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
 fn configured_window_title_reaches_the_foreground_client_once_per_change() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}/{tab}");
-    server.app.state.workspaces[0].cached_identity_cwd = "/srv/herd".into();
-    server.app.state.workspaces[0].cached_git_space = None;
 
-    // Without an agent the tab token is the tab's place.
+    // Without an agent both tokens are the place; manual labels are hidden.
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd//srv/herd".to_string()))
+        Some(Some("/srv/herd//srv/herd".to_string()))
     );
 
     // An unchanged title must not re-emit an OSC on every render.
@@ -551,7 +556,7 @@ fn a_foreground_client_without_a_writer_does_not_cache_the_window_title() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
 
     shutdown_test_runtimes(&mut server);
@@ -579,7 +584,7 @@ fn api_window_title_wins_until_it_is_cleared() {
         Some(Some("herdr api".to_string()))
     );
 
-    server.app.state.workspaces[0].custom_name = Some("ops".into());
+    server.app.state.workspaces[0].cached_identity_cwd = "/srv/ops".into();
     server.sync_window_title();
     assert!(no_window_title(&control_rx));
 
@@ -587,7 +592,7 @@ fn api_window_title_wins_until_it_is_cleared() {
     server.handle_client_window_title_api("clear".into(), None);
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("ops".to_string()))
+        Some(Some("/srv/ops".to_string()))
     );
 
     shutdown_test_runtimes(&mut server);
@@ -617,7 +622,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&first_control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
 
     // A second terminal starts on whatever its shell or ssh left behind.
@@ -637,7 +642,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
 
     assert_eq!(
         next_window_title(&second_control_rx),
-        Some(Some("herd".to_string()))
+        Some(Some("/srv/herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -654,6 +659,23 @@ async fn promoted_client_window_title_uses_its_own_view() {
     server.app.state.active = Some(1);
     server.app.state.selected = 1;
     server.app.state.ensure_test_terminals();
+    // The manual workspace label shows while an agent is detected in its
+    // first tab.
+    let first_tab = &server.app.state.workspaces[0].tabs[0];
+    let first_terminal = first_tab
+        .terminal_id(first_tab.root_pane)
+        .expect("first tab terminal")
+        .clone();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&first_terminal)
+        .expect("first tab terminal state")
+        .set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Working,
+        );
     let survivor_terminal = server.app.state.workspaces[0].tabs[survivor_tab_index]
         .terminal_id(survivor_pane)
         .expect("survivor terminal")

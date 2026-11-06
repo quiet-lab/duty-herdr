@@ -1478,14 +1478,18 @@ fn captured_window_titles(output: &SharedOutput) -> Vec<String> {
         .collect()
 }
 
-/// Waits for a title ending in `expected_suffix` that also contains `part`.
-fn wait_for_window_title_with(output: &SharedOutput, expected_suffix: &str, part: &str) -> String {
+/// Waits for a title ending in `expected_suffix` that also contains every one
+/// of `parts`.
+fn wait_for_window_title_with(
+    output: &SharedOutput,
+    expected_suffix: &str,
+    parts: &[String],
+) -> String {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if let Some(title) = captured_window_titles(output)
-            .into_iter()
-            .find(|title| title.ends_with(expected_suffix) && title.contains(part))
-        {
+        if let Some(title) = captured_window_titles(output).into_iter().find(|title| {
+            title.ends_with(expected_suffix) && parts.iter().all(|part| title.contains(part))
+        }) {
             return title;
         }
         thread::sleep(Duration::from_millis(20));
@@ -1588,10 +1592,13 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
         assert!(response.get("result").is_some(), "{response}");
     }
 
-    // Without an agent in the tab the tab token shows the tab's place (its
-    // root pane cwd outside Git) and app, not the manual label `tab-a`.
-    let first_place = format!("|W=space-a|T={}", base.display());
+    // Without an agent the workspace and tab tokens show the place (the root
+    // pane cwd outside Git) and app, not the manual labels `space-a`, `tab-a`.
+    // The workspace token always names the first tab.
+    let workspace_place = format!("|W={}", base.display());
+    let first_place = [workspace_place.clone(), format!("|T={}", base.display())];
     let renamed = wait_for_window_title_with(&output, "|P=pane-a|O=", &first_place);
+    assert!(!renamed.contains("W=space-a"), "{renamed}");
     assert!(!renamed.contains("T=tab-a"), "{renamed}");
     assert!(renamed.starts_with("H="));
     assert!(
@@ -1604,7 +1611,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
 
     let second_cwd = base.join("second");
     fs::create_dir_all(&second_cwd).unwrap();
-    let second_place = format!("|W=space-a|T={}", second_cwd.display());
+    let second_place = [workspace_place, format!("|T={}", second_cwd.display())];
     let second_tab = send_json_request(
         &api_socket,
         &serde_json::json!({
