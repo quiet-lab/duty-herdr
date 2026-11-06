@@ -1578,8 +1578,9 @@ impl AppState {
                 clear_state_labels,
                 seq,
                 ttl,
-            } => self
-                .update_terminal_state(pane_id, |terminal| {
+            } => {
+                self.mark_session_dirty();
+                self.update_terminal_state(pane_id, |terminal| {
                     terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
                         source,
                         agent_label,
@@ -1595,7 +1596,8 @@ impl AppState {
                     })
                 })
                 .into_iter()
-                .collect(),
+                .collect()
+            }
             AppEvent::HookAuthorityCleared {
                 pane_id,
                 source,

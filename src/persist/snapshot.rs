@@ -120,6 +120,10 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Presentation and tokens reported through `pane report-metadata`;
+    /// absent in sessions saved before they were carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_metadata: Option<crate::metadata_tokens::ReportedMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,7 +302,24 @@ pub fn capture(
 
 fn capture_reported_metadata(ws: &Workspace) -> Option<crate::metadata_tokens::ReportedMetadata> {
     let tokens = ws.metadata_tokens.export(std::time::Instant::now());
-    (!tokens.is_empty()).then_some(crate::metadata_tokens::ReportedMetadata { tokens })
+    (!tokens.is_empty()).then_some(crate::metadata_tokens::ReportedMetadata {
+        tokens,
+        presentation: Vec::new(),
+    })
+}
+
+fn capture_pane_reported_metadata(
+    terminal: &crate::terminal::TerminalState,
+) -> Option<crate::metadata_tokens::ReportedMetadata> {
+    let now = std::time::Instant::now();
+    let tokens = terminal.metadata_tokens.export(now);
+    let presentation = terminal.export_agent_metadata(now);
+    (!tokens.is_empty() || !presentation.is_empty()).then_some(
+        crate::metadata_tokens::ReportedMetadata {
+            tokens,
+            presentation,
+        },
+    )
 }
 
 fn capture_workspace(
@@ -408,6 +429,7 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
+                reported_metadata: terminal.and_then(capture_pane_reported_metadata),
             },
         );
     }
@@ -425,11 +447,22 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
 
     let mut value = serde_json::to_value(snapshot).ok()?;
-    // Reported tokens carry remaining lifetimes that differ on every capture.
+    // Reported metadata carries ages and lifetimes that differ on every capture.
     if let Some(workspaces) = value["workspaces"].as_array_mut() {
         for workspace in workspaces {
             if let Some(workspace) = workspace.as_object_mut() {
                 workspace.remove("reported_metadata");
+            }
+            for tab in workspace["tabs"].as_array_mut().into_iter().flatten() {
+                for pane in tab["panes"]
+                    .as_object_mut()
+                    .into_iter()
+                    .flat_map(|p| p.values_mut())
+                {
+                    if let Some(pane) = pane.as_object_mut() {
+                        pane.remove("reported_metadata");
+                    }
+                }
             }
         }
     }
@@ -735,6 +768,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                reported_metadata: None,
             },
         );
         panes.insert(
@@ -747,6 +781,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                reported_metadata: None,
             },
         );
 
@@ -1484,6 +1519,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                reported_metadata: None,
             },
         );
         panes.insert(
@@ -1498,6 +1534,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                reported_metadata: None,
             },
         );
 
@@ -1587,6 +1624,74 @@ mod tests {
             Some(std::time::Duration::from_secs(30)),
             now,
         );
+        assert_eq!(first, layout_fingerprint(&capture_from_state(&state)));
+    }
+    fn report_pane_display_agent(state: &mut AppState, display_agent: &str) {
+        let terminal_id = state.workspaces[0]
+            .pane_state(state.workspaces[0].tabs[0].root_pane)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal
+            .set_agent_metadata(crate::terminal::AgentMetadataReport {
+                source: "claude-main".into(),
+                agent_label: None,
+                applies_to_source: None,
+                title: None,
+                display_agent: Some(display_agent.into()),
+                state_labels: HashMap::new(),
+                clear_title: false,
+                clear_display_agent: false,
+                clear_state_labels: false,
+                ttl: None,
+                seq: None,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn capture_contract_tracks_reported_pane_display_agent() {
+        let mut state = state_with_workspaces(&["one"]);
+        let snapshot = capture_from_state(&state);
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        assert!(pane.reported_metadata.is_none());
+        assert!(serde_json::to_value(pane)
+            .unwrap()
+            .get("reported_metadata")
+            .is_none());
+
+        report_pane_display_agent(&mut state, "sonnet");
+        let snapshot = capture_from_state(&state);
+        let pane = snapshot.workspaces[0].tabs[0]
+            .panes
+            .values()
+            .next()
+            .unwrap();
+        let json = serde_json::to_value(pane).unwrap();
+        let presentation = &json["reported_metadata"]["presentation"][0];
+        assert_eq!(presentation["source"], "claude-main");
+        assert_eq!(presentation["display_agent"], "sonnet");
+        let read: PaneSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(read.reported_metadata, pane.reported_metadata);
+    }
+
+    #[test]
+    fn pane_snapshot_without_reported_metadata_loads() {
+        let read: PaneSnapshot = serde_json::from_str(r#"{"cwd": "/tmp"}"#).unwrap();
+        assert!(read.reported_metadata.is_none());
+    }
+
+    #[test]
+    fn layout_fingerprint_ignores_reported_pane_metadata_ages() {
+        let mut state = state_with_workspaces(&["one"]);
+        report_pane_display_agent(&mut state, "sonnet");
+        let first = layout_fingerprint(&capture_from_state(&state));
+        std::thread::sleep(std::time::Duration::from_millis(5));
         assert_eq!(first, layout_fingerprint(&capture_from_state(&state)));
     }
 }

@@ -1869,6 +1869,7 @@ impl App {
             });
         }
         if token_changed {
+            self.state.mark_session_dirty();
             self.sync_agent_metadata_deadline();
             self.emit_pane_updated(ws_idx, pane_id);
         }

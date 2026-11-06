@@ -452,6 +452,25 @@ fn restore_workspace(
     )
 }
 
+fn apply_reported_pane_metadata(
+    terminal: &mut TerminalState,
+    reported: &crate::metadata_tokens::ReportedMetadata,
+) {
+    let now = std::time::Instant::now();
+    terminal.metadata_tokens =
+        crate::metadata_tokens::MetadataTokens::import(&reported.tokens, now);
+    terminal.import_agent_metadata(&reported.presentation, now);
+}
+
+fn restore_reported_pane_metadata(
+    terminal: &mut TerminalState,
+    pane: &super::snapshot::PaneSnapshot,
+) {
+    if let Some(reported) = pane.reported_metadata.as_ref() {
+        apply_reported_pane_metadata(terminal, reported);
+    }
+}
+
 fn unavailable_restored_terminal(
     pane: Option<&super::snapshot::PaneSnapshot>,
     cwd: PathBuf,
@@ -463,6 +482,7 @@ fn unavailable_restored_terminal(
     if let Some(pane) = pane {
         terminal.manual_label = pane.label.clone();
         terminal.launch_argv = pane.launch_argv.clone();
+        restore_reported_pane_metadata(&mut terminal, pane);
         if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
             terminal.set_persisted_agent_session(session);
         }
@@ -550,6 +570,7 @@ fn restore_tab(
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
+        let saved_reported_metadata = saved_pane.and_then(|p| p.reported_metadata.as_ref());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_agent_resume = saved_pane.and_then(saved_reported_resume);
         let saved_history =
@@ -707,6 +728,9 @@ fn restore_tab(
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
+                }
+                if let Some(reported) = saved_reported_metadata {
+                    apply_reported_pane_metadata(&mut terminal, reported);
                 }
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
@@ -1665,6 +1689,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            reported_metadata: None,
                         },
                     )]),
                     zoomed: false,
@@ -1750,6 +1775,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                reported_metadata: None,
                             },
                         ),
                         (
@@ -1762,6 +1788,7 @@ mod tests {
                                 agent_session: None,
                                 agent_resume: None,
                                 launch_argv: None,
+                                reported_metadata: None,
                             },
                         ),
                     ]),
@@ -1816,6 +1843,7 @@ mod tests {
                     agent_session: None,
                     agent_resume: None,
                     launch_argv: None,
+                    reported_metadata: None,
                 },
             )
         };
@@ -1832,6 +1860,7 @@ mod tests {
             }),
             agent_resume: None,
             launch_argv: None,
+            reported_metadata: None,
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1993,6 +2022,7 @@ mod tests {
                             }),
                             agent_resume: None,
                             launch_argv: None,
+                            reported_metadata: None,
                         },
                     )]),
                     zoomed: false,
@@ -2299,6 +2329,7 @@ mod tests {
                 agent_session: None,
                 agent_resume: None,
                 launch_argv: None,
+                reported_metadata: None,
             },
         );
         let mut history = SessionHistorySnapshot {
@@ -2377,6 +2408,7 @@ mod tests {
             }
         }
         snapshot.workspaces[0].reported_metadata = Some(crate::metadata_tokens::ReportedMetadata {
+            presentation: Vec::new(),
             tokens: HashMap::from([
                 (
                     "color".to_owned(),
@@ -2420,5 +2452,74 @@ mod tests {
         assert_eq!(workspaces[0].metadata_tokens.value("note"), Some("timed"));
         assert!(workspaces[0].metadata_tokens.next_expiry().is_some());
         assert_eq!(workspaces[1].metadata_tokens.value("color"), None);
+    }
+    #[tokio::test]
+    async fn restore_keeps_reported_pane_display_agent() {
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    assert!(pane.reported_metadata.is_none());
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        let first_pane = *snapshot.workspaces[0].tabs[0].panes.keys().min().unwrap();
+        snapshot.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&first_pane)
+            .unwrap()
+            .reported_metadata = Some(crate::metadata_tokens::ReportedMetadata {
+            tokens: HashMap::from([(
+                "note".to_owned(),
+                crate::metadata_tokens::PersistedMetadataToken {
+                    value: "kept".into(),
+                    ttl_remaining_ms: None,
+                },
+            )]),
+            presentation: vec![crate::metadata_tokens::PersistedPresentation {
+                source: "claude-main".into(),
+                display_agent: Some("sonnet".into()),
+                age_ms: 1_000,
+                display_agent_age_ms: Some(1_000),
+                ..Default::default()
+            }],
+        });
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let snapshot: SessionSnapshot = serde_json::from_str(&json).unwrap();
+
+        let (events, _rx) = mpsc::channel(32);
+        let (workspaces, terminals, _) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let restored = &workspaces[0].tabs[0];
+        let terminal = &terminals[&restored.terminal_id(restored.root_pane).unwrap().clone()];
+        assert_eq!(
+            terminal.effective_display_agent().as_deref(),
+            Some("sonnet")
+        );
+        assert_eq!(terminal.agent_metadata["claude-main"].source, "claude-main");
+        assert_eq!(terminal.metadata_tokens.value("note"), Some("kept"));
+        let others = terminals
+            .values()
+            .filter(|terminal| terminal.effective_display_agent().is_some())
+            .count();
+        assert_eq!(others, 1);
     }
 }
