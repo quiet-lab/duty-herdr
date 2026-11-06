@@ -63,6 +63,15 @@ pub(crate) fn home_dir() -> Option<&'static Path> {
         .as_deref()
 }
 
+/// Text of `path` as `Path::display` writes it (invalid sequences become
+/// U+FFFD), without the formatter: client snapshots convert pane cwds on
+/// every projection.
+pub(crate) fn path_into_text(path: PathBuf) -> String {
+    path.into_os_string()
+        .into_string()
+        .unwrap_or_else(|path| path.to_string_lossy().into_owned())
+}
+
 pub(crate) fn expand_tilde_path(path: &str) -> PathBuf {
     expand_tilde_path_from_env(path, cfg!(windows), |key| std::env::var_os(key))
 }

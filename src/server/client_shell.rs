@@ -64,23 +64,30 @@ pub(super) fn snapshot_with_completions(
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             let workspace_id = workspace.workspace_id;
-            let active_tab_id = location
+            // The workspace's own active tab is known by index; only a
+            // client's location names another one by public id.
+            let (active_tab_id, active_tab_index) = match location
                 .and_then(|location| location.active_tab_ids.get(&workspace_id))
-                .cloned()
-                .unwrap_or(workspace.active_tab_id);
-            let active_tab_index =
-                app.parse_tab_id(&active_tab_id)
-                    .and_then(|(tab_workspace_index, tab_index)| {
-                        (tab_workspace_index == workspace_index).then_some(tab_index)
-                    });
+            {
+                Some(active_tab_id) => (
+                    active_tab_id.clone(),
+                    app.parse_tab_id(active_tab_id)
+                        .and_then(|(tab_workspace_index, tab_index)| {
+                            (tab_workspace_index == workspace_index).then_some(tab_index)
+                        }),
+                ),
+                None => (
+                    workspace.active_tab_id,
+                    state.tabs.get(state.active_tab).map(|_| state.active_tab),
+                ),
+            };
             protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id,
                 active_tab_id,
-                new_workspace_cwd: app
-                    .resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
-                    .display()
-                    .to_string(),
+                new_workspace_cwd: crate::worktree::path_into_text(
+                    app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index),
+                ),
                 number: workspace.number,
                 label: workspace.label,
                 custom_label: state.custom_name.is_some(),
@@ -121,27 +128,38 @@ pub(super) fn snapshot_with_completions(
                 custom_label: !state.is_auto_named(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
-                place: facts.place,
-                agent_label: facts.agent,
+                place: facts.place.map(std::borrow::Cow::into_owned),
+                agent_label: facts.agent.map(std::borrow::Cow::into_owned),
                 foreground_process: facts.foreground_process.map(str::to_owned),
             }
         })
         .collect();
+    // Public ids of the panes with right-click passthrough, usually none:
+    // resolving every snapshot pane id back to its pane searches the
+    // workspaces linearly, quadratic in the session size.
+    let passthrough_pane_ids = app
+        .state
+        .workspaces
+        .iter()
+        .enumerate()
+        .flat_map(|(workspace_index, workspace)| {
+            workspace
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.panes.iter())
+                .filter(|(_, pane)| pane.right_click_passthrough)
+                .map(move |(pane_id, _)| (workspace_index, *pane_id))
+        })
+        .filter_map(|(workspace_index, pane_id)| app.public_pane_id(workspace_index, pane_id))
+        .collect::<std::collections::HashSet<_>>();
     let panes = snapshot
         .panes
         .into_iter()
         .map(|pane| {
             let pane_id = pane.pane_id;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
-            let right_click_passthrough = app
-                .parse_pane_id(&pane_id)
-                .and_then(|(workspace_index, pane_id)| {
-                    app.state
-                        .workspaces
-                        .get(workspace_index)?
-                        .pane_state(pane_id)
-                })
-                .is_some_and(|pane| pane.right_click_passthrough);
+            let right_click_passthrough =
+                !passthrough_pane_ids.is_empty() && passthrough_pane_ids.contains(&pane_id);
             protocol::ClientShellPane {
                 pane_id,
                 workspace_id: pane.workspace_id,
@@ -731,6 +749,186 @@ mod tests {
             .tabs
             .iter()
             .all(|tab| tab.foreground_process.is_none()));
+    }
+
+    fn facts_test_app(workspace: crate::workspace::Workspace) -> crate::app::App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app
+    }
+
+    fn tab_terminal(app: &mut crate::app::App, tab: usize) -> &mut crate::terminal::TerminalState {
+        let tab = &app.state.workspaces[0].tabs[tab];
+        let terminal_id = tab
+            .terminal_id(tab.root_pane)
+            .expect("root terminal")
+            .clone();
+        app.state.terminals.get_mut(&terminal_id).expect("terminal")
+    }
+
+    /// Tab label facts are read from session state on every snapshot, so each
+    /// event that changes them shows up in the next snapshot.
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_tab_facts_follow_cwd_agent_process_and_tab_changes() {
+        let mut workspace = crate::workspace::Workspace::test_new("facts");
+        workspace.test_add_tab(None);
+        workspace.cached_identity_cwd = std::path::PathBuf::from("/srv/identity");
+        workspace.cached_git_space = None;
+        let mut app = facts_test_app(workspace);
+        struct RemoveOnDrop(std::path::PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let dirs = std::env::temp_dir().join(format!(
+            "herdr-snapshot-tab-facts-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let _cleanup = RemoveOnDrop(dirs.clone());
+        for name in ["one", "two"] {
+            std::fs::create_dir_all(dirs.join(name)).expect("create cwd");
+        }
+        let second_root = app.state.workspaces[0].tabs[1].root_pane;
+        let tab = |app: &crate::app::App, index: usize| {
+            snapshot(app, "boot", 1, None, None).tabs[index].clone()
+        };
+
+        // OSC 7 of the later tab's root pane.
+        for name in ["one", "two"] {
+            app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+                pane_id: second_root,
+                cwd: dirs.join(name),
+            });
+            assert_eq!(tab(&app, 1).place.as_deref(), Some(name));
+        }
+        assert_eq!(tab(&app, 0).place.as_deref(), Some("identity"));
+
+        // Agent start and exit.
+        tab_terminal(&mut app, 1).set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Working,
+        );
+        assert_eq!(
+            tab(&app, 1).agent_label.as_deref(),
+            Some(crate::detect::agent_label(crate::detect::Agent::Pi))
+        );
+        assert_eq!(tab(&app, 0).agent_label, None);
+        tab_terminal(&mut app, 1).set_detected_state(None, crate::detect::AgentState::Idle);
+        assert_eq!(tab(&app, 1).agent_label, None);
+
+        // Foreground process change.
+        for name in [Some("nvim"), Some("htop"), None] {
+            app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+                pane_id: second_root,
+                name: name.map(str::to_owned),
+            });
+            assert_eq!(tab(&app, 1).foreground_process.as_deref(), name);
+        }
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+            pane_id: second_root,
+            name: Some("nvim".into()),
+        });
+
+        // A rename changes the label, not the facts.
+        app.state.workspaces[0].tabs[1].set_custom_name("notes".into());
+        let renamed = tab(&app, 1);
+        assert!(renamed.custom_label);
+        assert_eq!(renamed.place.as_deref(), Some("two"));
+        assert_eq!(renamed.foreground_process.as_deref(), Some("nvim"));
+
+        // Moved first, the tab takes the workspace place; the other tab
+        // shows its root cwd.
+        assert!(app.state.workspaces[0].move_tab(1, 0));
+        let moved = tab(&app, 0);
+        assert_eq!(moved.tab_id, renamed.tab_id);
+        assert_eq!(moved.place.as_deref(), Some("identity"));
+        assert_eq!(moved.foreground_process.as_deref(), Some("nvim"));
+        let other = tab(&app, 1);
+        let other_cwd = tab_terminal(&mut app, 1).cwd.clone();
+        assert_eq!(
+            other.place,
+            Some(app.state.workspaces[0].place_label_for(&other_cwd))
+        );
+        assert_eq!(other.foreground_process, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_marks_right_click_passthrough_and_active_tab_per_pane() {
+        let mut workspace = crate::workspace::Workspace::test_new("passthrough");
+        let root = workspace.tabs[0].root_pane;
+        let split = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.test_add_tab(None);
+        workspace.active_tab = 1;
+        let mut app = facts_test_app(workspace);
+        let mut other = crate::workspace::Workspace::test_new("other");
+        other
+            .panes
+            .values_mut()
+            .for_each(|pane| pane.right_click_passthrough = true);
+        app.state.workspaces.push(other);
+        app.state.ensure_test_terminals();
+        app.state.workspaces[0]
+            .pane_state_mut(split)
+            .expect("split pane")
+            .right_click_passthrough = true;
+
+        let shell = snapshot(&app, "boot", 1, None, None);
+        let flagged = |pane_id: crate::layout::PaneId, workspace: usize| {
+            let public = app.public_pane_id(workspace, pane_id).expect("public id");
+            shell
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == public)
+                .expect("pane in snapshot")
+                .right_click_passthrough
+        };
+        assert!(!flagged(root, 0));
+        assert!(flagged(split, 0));
+        let other_root = app.state.workspaces[1].tabs[0].root_pane;
+        assert!(flagged(other_root, 1));
+        let second_tab_root = app.state.workspaces[0].tabs[1].root_pane;
+        assert!(!flagged(second_tab_root, 0));
+
+        // The workspace's own active tab, and a client's location naming
+        // another one.
+        assert_eq!(
+            shell.workspaces[0].active_tab_id,
+            app.public_tab_id(0, 1).expect("tab id")
+        );
+        let first_tab_id = app.public_tab_id(0, 0).expect("tab id");
+        let mut location = crate::server::clients::ClientShellLocation::default();
+        location.active_tab_ids.insert(
+            shell.workspaces[0].workspace_id.clone(),
+            first_tab_id.clone(),
+        );
+        let located = snapshot(&app, "boot", 1, None, Some(&location));
+        assert_eq!(located.workspaces[0].active_tab_id, first_tab_id);
+        assert_eq!(
+            located.workspaces[0].new_workspace_cwd,
+            app.resolved_new_workspace_cwd_from_tab(0, Some(0))
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            shell.workspaces[0].new_workspace_cwd,
+            app.resolved_new_workspace_cwd_from_tab(0, Some(1))
+                .display()
+                .to_string()
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

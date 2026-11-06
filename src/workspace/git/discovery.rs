@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -29,17 +30,40 @@ pub fn derive_label_from_cwd(cwd: &Path) -> String {
 
 /// Name of `cwd` for labels, never a path: `~` for the home directory, the
 /// last component otherwise, the full path only for a root without a name.
-/// The place label of tabs outside the cached checkout goes through here on
-/// every snapshot, so the home directory is the cached one.
 pub fn fallback_label_from_cwd(cwd: &Path) -> String {
-    if crate::worktree::home_dir() == Some(cwd) {
-        return "~".to_string();
-    }
+    fallback_label_ref(cwd).into_owned()
+}
 
-    cwd.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| cwd.display().to_string())
+/// [`fallback_label_from_cwd`] borrowed from `cwd` where possible. The place
+/// label of tabs outside the cached checkout goes through here on every client
+/// snapshot, so it does not allocate for a UTF-8 name and compares the cached
+/// home directory component-wise only when the bytes and the last components
+/// leave the answer open.
+pub(crate) fn fallback_label_ref(cwd: &Path) -> Cow<'_, str> {
+    let name = cwd.file_name();
+    if is_home_dir(cwd, name) {
+        return Cow::Borrowed("~");
+    }
+    match name {
+        Some(name) if !name.is_empty() => name.to_string_lossy(),
+        _ => Cow::Owned(cwd.display().to_string()),
+    }
+}
+
+/// Whether `cwd` (whose last component is `name`) is the cached home directory
+/// by [`Path`] equality. Equal paths have equal last components, so the
+/// component-wise comparison runs only when the bytes differ and the last
+/// components agree (a trailing `/`, `.` or repeated separators).
+fn is_home_dir(cwd: &Path, name: Option<&std::ffi::OsStr>) -> bool {
+    // The home name is cached because `file_name` parses components and this
+    // branch runs for every tab whose cwd is not byte-equal to the home.
+    static HOME_NAME: std::sync::OnceLock<Option<&'static std::ffi::OsStr>> =
+        std::sync::OnceLock::new();
+    let Some(home) = crate::worktree::home_dir() else {
+        return false;
+    };
+    home.as_os_str() == cwd.as_os_str()
+        || (*HOME_NAME.get_or_init(|| home.file_name()) == name && home == cwd)
 }
 
 pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
@@ -64,11 +88,19 @@ pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
 }
 
 pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
+    automatic_workspace_label_ref(cwd, repo_root).into_owned()
+}
+
+/// [`automatic_workspace_label`] borrowed from its arguments where possible.
+pub(crate) fn automatic_workspace_label_ref<'a>(
+    cwd: &'a Path,
+    repo_root: &'a Path,
+) -> Cow<'a, str> {
     repo_root
         .file_name()
         .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| fallback_label_from_cwd(cwd))
+        .map(Cow::Borrowed)
+        .unwrap_or_else(|| fallback_label_ref(cwd))
 }
 
 pub(super) fn git_space_metadata_from_info(info: &GitWorktreeInfo) -> GitSpaceMetadata {

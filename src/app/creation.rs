@@ -345,10 +345,10 @@ impl App {
             focused,
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(crate::worktree::path_into_text),
             foreground_cwd: ws.tabs[tab_idx]
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(crate::worktree::path_into_text),
             foreground_process: terminal.foreground_process.clone(),
             restore_error: terminal.restore_error.clone(),
             label: terminal.manual_label.clone(),
