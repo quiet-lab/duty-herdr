@@ -88,13 +88,20 @@ impl Scenario {
 
     /// Installs the next snapshot revision and returns the focus requests of the queue.
     fn publish(&mut self) -> Vec<crate::api::schema::Method> {
+        self.publish_requests()
+            .into_iter()
+            .map(|request| request.method)
+            .collect()
+    }
+
+    fn publish_requests(&mut self) -> Vec<crate::api::schema::Request> {
         self.projected.revision += 1;
         self.state.set_snapshot(Box::new(self.projected.clone()));
         self.state
             .follow_blocked_after_snapshot()
             .into_iter()
             .map(|action| match action {
-                ClientShellAction::Endpoint { request, .. } => request.method,
+                ClientShellAction::Endpoint { request, .. } => *request,
                 other => panic!("unexpected action {other:?}"),
             })
             .collect()
@@ -386,4 +393,96 @@ fn follow_blocked_focuses_the_dialog_without_a_usable_input_pane() {
     assert!(scenario.publish().is_empty());
     scenario.set_status("pane_2", AgentStatus::Working);
     assert_eq!(scenario.publish(), pane_focus("pane_3"));
+}
+
+#[test]
+fn follow_blocked_detects_manual_navigation_before_confirmation() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    assert_eq!(scenario.publish(), pane_focus("pane_2"));
+    // The server applied the switch and the user's own switch to ws_4 in one snapshot.
+    scenario.focus("ws_4");
+    assert!(scenario.publish().is_empty());
+    scenario.set_status("pane_2", AgentStatus::Working);
+    assert!(scenario.publish().is_empty(), "no return against the user");
+}
+
+#[test]
+fn follow_blocked_rejected_switch_ends_the_chain_quietly() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    let requests = scenario.publish_requests();
+    assert_eq!(requests.len(), 1);
+    let (repaint, actions) = scenario.state.handle_endpoint_result(
+        "boot-1",
+        &requests[0].id,
+        Err(ClientShellEndpointError {
+            code: Some("pane_not_found".into()),
+            message: "pane not found".into(),
+        }),
+    );
+    assert!(!repaint && actions.is_empty());
+    assert!(scenario.state.visible_endpoint_notice.is_none());
+    // The next dialog is followed again.
+    scenario.set_status("pane_3", AgentStatus::Blocked);
+    assert_eq!(scenario.publish(), pane_focus("pane_2"));
+}
+
+#[test]
+fn follow_blocked_dialog_asking_again_between_snapshots_moves_on() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    let switch = scenario.publish();
+    scenario.apply(&switch);
+    scenario.set_status("pane_3", AgentStatus::Blocked);
+    assert!(scenario.publish().is_empty());
+    // pane_2 is answered and asks the next question before the client sees a snapshot.
+    scenario.set_status("pane_2", AgentStatus::Working);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    assert!(
+        scenario.publish().is_empty(),
+        "the user stays on the follow-up question"
+    );
+    // Answering the follow-up question is an answer of the followed pane.
+    scenario.set_status("pane_2", AgentStatus::Working);
+    let next = scenario.publish();
+    assert_eq!(next, pane_focus("pane_3"));
+    scenario.apply(&next);
+    scenario.set_status("pane_3", AgentStatus::Working);
+    assert_eq!(scenario.publish(), workspace_focus("ws_1"));
+}
+
+#[test]
+fn follow_blocked_dialog_asking_again_moves_behind_the_queue() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    let switch = scenario.publish();
+    scenario.apply(&switch);
+    scenario.set_status("pane_3", AgentStatus::Blocked);
+    scenario.set_status("pane_4", AgentStatus::Blocked);
+    assert!(scenario.publish().is_empty());
+    // pane_3 asks again while waiting: it goes behind pane_4.
+    scenario.set_status("pane_3", AgentStatus::Working);
+    scenario.set_status("pane_3", AgentStatus::Blocked);
+    assert!(
+        scenario.publish().is_empty(),
+        "the user is answering pane_2"
+    );
+    scenario.set_status("pane_2", AgentStatus::Working);
+    assert_eq!(scenario.publish(), pane_focus("pane_4"));
+}
+
+#[test]
+fn follow_blocked_baseline_follows_the_focused_dialog() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_1", AgentStatus::Blocked);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    scenario.projected.boot_id = "boot-2".into();
+    assert!(scenario.publish().is_empty(), "baseline");
+    scenario.set_status("pane_1", AgentStatus::Working);
+    let next = scenario.publish();
+    assert_eq!(next, pane_focus("pane_2"));
+    scenario.apply(&next);
+    scenario.set_status("pane_2", AgentStatus::Working);
+    assert_eq!(scenario.publish(), workspace_focus("ws_1"));
 }

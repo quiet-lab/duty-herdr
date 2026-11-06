@@ -518,6 +518,10 @@ impl ClientShellState {
         if let PendingEndpointKind::PaneLinkResolve { target } = pending.kind {
             return self.complete_link_hover(target, result);
         }
+        // An automatic dialog switch the user never asked for fails quietly.
+        if result.is_err() && self.follow_blocked.request_failed(request_id) {
+            return (false, Vec::new());
+        }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
                 boot_id: boot_id.to_owned(),

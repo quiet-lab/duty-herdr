@@ -1976,7 +1976,9 @@ async fn run_client_loop(
                                 if let Some(frame) = state.shell.as_mut().and_then(|shell| {
                                     shell.compose(state.reported_size.0, state.reported_size.1)
                                 }) {
-                                    state.present_frame(frame);
+                                    // Follow actions exist only for a projected snapshot,
+                                    // which install_client_shell_snapshot presents this way.
+                                    state.present_frozen_chrome(frame);
                                 }
                             }
                         } else {
@@ -2199,7 +2201,9 @@ async fn run_client_loop(
                                 if let Some(frame) = state.shell.as_mut().and_then(|shell| {
                                     shell.compose(state.reported_size.0, state.reported_size.1)
                                 }) {
-                                    state.present_frame(frame);
+                                    // Follow actions exist only for a projected snapshot,
+                                    // which install_client_shell_snapshot presents this way.
+                                    state.present_frozen_chrome(frame);
                                 }
                             }
                         }

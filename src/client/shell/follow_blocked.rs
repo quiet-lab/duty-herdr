@@ -10,19 +10,23 @@
 //! - A pane counts as a dialog while it is a detected agent in `blocked` whose pane and
 //!   workspace are present in the snapshot.
 //! - The queue holds dialogs in the order they entered `blocked` (FIFO by
-//!   `state_change_seq`). The first snapshot of an endpoint boot is a baseline: dialogs already
-//!   open are queued without switching.
+//!   `state_change_seq`). A pane whose sequence changed while it stayed `blocked` (answered
+//!   and asking again between two snapshots) counts as leaving and entering again.
+//! - The first snapshot of an endpoint boot is a baseline: dialogs already open are queued
+//!   without switching; a dialog in the focused workspace becomes the followed pane.
 //! - Only two events switch: a pane enters `blocked`, or the followed pane leaves it.
 //! - While the active workspace holds a dialog nothing switches; that dialog becomes the
 //!   followed pane, so answering it moves on.
 //! - Otherwise the client focuses the queue head (or the input pane its `input_pane` token
-//!   names in the same tab) and remembers the workspace it left as the
-//!   origin of the chain (only on the first switch of a chain).
+//!   names in the same tab) and remembers the workspace it left as the origin of the chain
+//!   (only on the first switch of a chain).
 //! - When the followed pane leaves `blocked` and the queue is empty, the client returns to the
 //!   origin if it still exists.
-//! - When the user leaves the followed workspace after the switch is confirmed, the chain ends
-//!   (no follow-up switch, no return); the queue continues from the next entry into
-//!   `blocked`.
+//! - When the user focuses another workspace than the followed one (before the switch is
+//!   confirmed: another workspace than both the followed one and the one the request left),
+//!   the chain ends (no follow-up switch, no return); the queue continues from the next entry
+//!   into `blocked`.
+//! - A switch that could not be sent, was cancelled or was rejected ends its chain quietly.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -41,16 +45,27 @@ struct FollowedPane {
     /// The snapshot showed the followed workspace focused. Until then a snapshot that
     /// predates the focus request must not read as the user leaving.
     confirmed: bool,
+    /// Workspace focused when the client requested the switch; `None` once confirmed or
+    /// when the client adopted a dialog the user was already looking at.
+    requested_from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Dialog {
+    workspace_id: String,
+    state_change_seq: u64,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct FollowBlocked {
     scope: Option<(ClientEndpointId, String)>,
-    /// Current dialogs: pane ID to workspace ID.
-    blocked: HashMap<String, String>,
+    /// Current dialogs by pane ID.
+    blocked: HashMap<String, Dialog>,
     queue: VecDeque<String>,
     followed: Option<FollowedPane>,
     origin_workspace_id: Option<String>,
+    /// Endpoint request ID of the unconfirmed focus switch.
+    pending_request_id: Option<String>,
 }
 
 fn dialog_panes(snapshot: &ClientShellSnapshot) -> Vec<(&str, &str, u64)> {
@@ -84,16 +99,48 @@ impl FollowBlocked {
         *self = Self::default();
     }
 
-    /// The focus request could not be sent: forget the unconfirmed switch so the next
-    /// event can try again.
+    /// The focus switch was not sent, was cancelled or was rejected: forget it and the
+    /// chain it started, so the next event can try again.
     fn abandon_unconfirmed(&mut self) {
+        self.pending_request_id = None;
         if self
             .followed
             .as_ref()
             .is_some_and(|followed| !followed.confirmed)
         {
             self.followed = None;
+            self.origin_workspace_id = None;
         }
+    }
+
+    pub(super) fn request_failed(&mut self, request_id: &str) -> bool {
+        if self.pending_request_id.as_deref() != Some(request_id) {
+            return false;
+        }
+        self.abandon_unconfirmed();
+        true
+    }
+
+    /// Follows the dialog of the focused workspace that entered `blocked` first.
+    fn adopt_focused_dialog(&mut self, focused: Option<&str>) -> bool {
+        let Some((pane_id, workspace_id)) = self.queue.iter().find_map(|pane_id| {
+            self.blocked
+                .get(pane_id)
+                .filter(|dialog| Some(dialog.workspace_id.as_str()) == focused)
+                .map(|dialog| (pane_id.clone(), dialog.workspace_id.clone()))
+        }) else {
+            return false;
+        };
+        self.followed = Some(FollowedPane {
+            pane_id,
+            workspace_id,
+            confirmed: true,
+            requested_from: None,
+        });
+        if self.origin_workspace_id.is_none() {
+            self.origin_workspace_id = focused.map(str::to_owned);
+        }
+        true
     }
 
     /// Updates the queue from the active endpoint snapshot and returns the focus change to
@@ -103,52 +150,113 @@ impl FollowBlocked {
         endpoint_id: &ClientEndpointId,
         snapshot: &ClientShellSnapshot,
     ) -> Option<FollowBlockedFocus> {
-        let mut dialogs = dialog_panes(snapshot);
-        dialogs.sort_by(|left, right| left.2.cmp(&right.2).then(left.0.cmp(right.0)));
         let same_scope = self
             .scope
             .as_ref()
             .is_some_and(|(endpoint, boot)| endpoint == endpoint_id && boot == &snapshot.boot_id);
+        // Most snapshots change titles, focus or output with no dialog open: skip them
+        // without collecting or allocating.
+        if same_scope
+            && self.blocked.is_empty()
+            && !snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Blocked)
+        {
+            return None;
+        }
+        let mut dialogs = dialog_panes(snapshot);
+        dialogs.sort_by(|left, right| left.2.cmp(&right.2).then(left.0.cmp(right.0)));
+        let focused = snapshot.focused_workspace_id.as_deref();
         if !same_scope {
             self.reset();
             self.scope = Some((endpoint_id.clone(), snapshot.boot_id.clone()));
-            for (pane_id, workspace_id, _) in dialogs {
-                self.blocked
-                    .insert(pane_id.to_owned(), workspace_id.to_owned());
+            for (pane_id, workspace_id, state_change_seq) in dialogs {
+                self.blocked.insert(
+                    pane_id.to_owned(),
+                    Dialog {
+                        workspace_id: workspace_id.to_owned(),
+                        state_change_seq,
+                    },
+                );
                 self.queue.push_back(pane_id.to_owned());
             }
+            // Baseline: open dialogs queue without switching; one the user is looking at
+            // is followed, so answering it moves on.
+            self.adopt_focused_dialog(focused);
             return None;
         }
 
+        let unchanged = dialogs.len() == self.blocked.len()
+            && dialogs.iter().all(|(pane_id, workspace_id, seq)| {
+                self.blocked.get(*pane_id).is_some_and(|dialog| {
+                    dialog.workspace_id == *workspace_id && dialog.state_change_seq == *seq
+                })
+            });
         let mut entered = false;
-        let mut current = HashMap::with_capacity(dialogs.len());
-        for (pane_id, workspace_id, _) in dialogs {
-            if !self.blocked.contains_key(pane_id) {
-                entered = true;
-                self.queue.push_back(pane_id.to_owned());
-            }
-            current.insert(pane_id.to_owned(), workspace_id.to_owned());
-        }
-        self.blocked = current;
-        let blocked = &self.blocked;
-        self.queue.retain(|pane_id| blocked.contains_key(pane_id));
-
-        let focused = snapshot.focused_workspace_id.as_deref();
         let mut answered = false;
+        if !unchanged {
+            let mut current = HashMap::with_capacity(dialogs.len());
+            for (pane_id, workspace_id, state_change_seq) in dialogs {
+                match self.blocked.get(pane_id) {
+                    Some(previous) if previous.state_change_seq == state_change_seq => {}
+                    previous => {
+                        // A new dialog, or the same pane answered and asking again between
+                        // two snapshots: it goes to the back of the queue.
+                        entered = true;
+                        if previous.is_some() {
+                            self.queue.retain(|queued| queued != pane_id);
+                            if self
+                                .followed
+                                .as_ref()
+                                .is_some_and(|followed| followed.pane_id == pane_id)
+                            {
+                                self.followed = None;
+                                self.pending_request_id = None;
+                                answered = true;
+                            }
+                        }
+                        self.queue.push_back(pane_id.to_owned());
+                    }
+                }
+                current.insert(
+                    pane_id.to_owned(),
+                    Dialog {
+                        workspace_id: workspace_id.to_owned(),
+                        state_change_seq,
+                    },
+                );
+            }
+            self.blocked = current;
+            let blocked = &self.blocked;
+            self.queue.retain(|pane_id| blocked.contains_key(pane_id));
+        }
+
         if let Some(followed) = self.followed.as_mut() {
             match self.blocked.get(&followed.pane_id) {
                 None => {
                     self.followed = None;
+                    self.pending_request_id = None;
                     answered = true;
                 }
-                Some(workspace_id) => {
-                    followed.workspace_id.clone_from(workspace_id);
-                    if focused == Some(followed.workspace_id.as_str()) {
+                Some(dialog) => {
+                    followed.workspace_id.clone_from(&dialog.workspace_id);
+                    let on_dialog = focused == Some(followed.workspace_id.as_str());
+                    // Before confirmation, a focus that is neither the dialog nor the
+                    // workspace the request left is the user's own choice.
+                    let user_moved = if followed.confirmed {
+                        !on_dialog
+                    } else {
+                        !on_dialog && focused != followed.requested_from.as_deref()
+                    };
+                    if on_dialog {
                         followed.confirmed = true;
-                    } else if followed.confirmed {
-                        // The user moved away from the dialog the client switched to.
+                        followed.requested_from = None;
+                        self.pending_request_id = None;
+                    } else if user_moved {
                         self.followed = None;
                         self.origin_workspace_id = None;
+                        self.pending_request_id = None;
                     }
                 }
             }
@@ -157,30 +265,16 @@ impl FollowBlocked {
             return None;
         }
 
-        let queued = |pane_id: &String| {
-            self.blocked
-                .get(pane_id)
-                .map(|workspace_id| (pane_id.clone(), workspace_id.clone()))
-        };
-        if let Some((pane_id, workspace_id)) = self
-            .queue
-            .iter()
-            .filter_map(queued)
-            .find(|(_, workspace_id)| Some(workspace_id.as_str()) == focused)
-        {
+        if self.adopt_focused_dialog(focused) {
             // The user is looking at a dialog: wait for its answer.
-            self.followed = Some(FollowedPane {
-                pane_id,
-                workspace_id,
-                confirmed: true,
-            });
-            if self.origin_workspace_id.is_none() {
-                self.origin_workspace_id = focused.map(str::to_owned);
-            }
             return None;
         }
 
-        if let Some((pane_id, workspace_id)) = self.queue.iter().find_map(queued) {
+        if let Some((pane_id, workspace_id)) = self.queue.iter().find_map(|pane_id| {
+            self.blocked
+                .get(pane_id)
+                .map(|dialog| (pane_id.clone(), dialog.workspace_id.clone()))
+        }) {
             if self.origin_workspace_id.is_none() {
                 self.origin_workspace_id = focused.map(str::to_owned);
             }
@@ -188,6 +282,7 @@ impl FollowBlocked {
                 pane_id: pane_id.clone(),
                 workspace_id,
                 confirmed: false,
+                requested_from: focused.map(str::to_owned),
             });
             return Some(FollowBlockedFocus::Pane(pane_id));
         }
@@ -259,9 +354,11 @@ impl ClientShellState {
                 })
             }
         };
+        let request_id = format!("client-shell:{}", self.next_request_id);
         let mut outcome = ClientShellInput::default();
-        if !self.push_endpoint_method_with_kind(method, PendingEndpointKind::Generic, &mut outcome)
-        {
+        if self.push_endpoint_method_with_kind(method, PendingEndpointKind::Generic, &mut outcome) {
+            self.follow_blocked.pending_request_id = Some(request_id);
+        } else {
             self.follow_blocked.abandon_unconfirmed();
         }
         outcome.actions
