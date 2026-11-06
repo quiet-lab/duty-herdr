@@ -1579,24 +1579,29 @@ impl AppState {
                 seq,
                 ttl,
             } => {
-                self.mark_session_dirty();
-                self.update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
-                        source,
-                        agent_label,
-                        applies_to_source,
-                        title,
-                        display_agent,
-                        state_labels,
-                        clear_title,
-                        clear_display_agent,
-                        clear_state_labels,
-                        ttl,
-                        seq,
+                let updates: Vec<_> = self
+                    .update_terminal_state(pane_id, |terminal| {
+                        terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+                            source,
+                            agent_label,
+                            applies_to_source,
+                            title,
+                            display_agent,
+                            state_labels,
+                            clear_title,
+                            clear_display_agent,
+                            clear_state_labels,
+                            ttl,
+                            seq,
+                        })
                     })
-                })
-                .into_iter()
-                .collect()
+                    .into_iter()
+                    .collect();
+                // Only an applied report changes what a snapshot carries.
+                if !updates.is_empty() {
+                    self.mark_session_dirty();
+                }
+                updates
             }
             AppEvent::HookAuthorityCleared {
                 pane_id,

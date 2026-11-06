@@ -340,6 +340,21 @@ impl TerminalState {
     ) {
         use crate::metadata_tokens::instant_before;
         for saved in reported {
+            if saved.ttl_ms.is_some_and(|ttl| saved.age_ms >= ttl) {
+                continue;
+            }
+            // A clock younger than the saved age cannot place the report in
+            // the past: it restarts now with only its remaining lifetime.
+            let young_clock = now
+                .checked_sub(Duration::from_millis(saved.age_ms))
+                .is_none();
+            let ttl = saved.ttl_ms.map(|ttl| {
+                Duration::from_millis(if young_clock {
+                    ttl.saturating_sub(saved.age_ms)
+                } else {
+                    ttl
+                })
+            });
             let metadata = AgentMetadata {
                 source: saved.source.clone(),
                 agent_label: saved.agent_label.clone(),
@@ -363,7 +378,7 @@ impl TerminalState {
                         (state.clone(), instant_before(now, *age))
                     })
                     .collect(),
-                ttl: saved.ttl_ms.map(Duration::from_millis),
+                ttl,
                 expiry_event_pending: false,
             };
             if self.agent_metadata_is_expired(&metadata, now) {
@@ -1262,39 +1277,34 @@ mod tests {
         assert_eq!(presentation.display_agent.as_deref(), Some("Fresh display"));
     }
     #[test]
-    fn export_import_keeps_presentation_order_and_drops_expired() {
-        let mut terminal = test_terminal();
-        let report = |source: &str, display_agent: &str, ttl| AgentMetadataReport {
-            source: source.into(),
-            agent_label: None,
-            applies_to_source: None,
-            title: None,
-            display_agent: Some(display_agent.into()),
-            state_labels: HashMap::new(),
-            clear_title: false,
-            clear_display_agent: false,
-            clear_state_labels: false,
-            ttl,
-            seq: None,
+    fn import_keeps_presentation_order_and_drops_expired() {
+        let saved = |source: &str, display_agent: &str, age_ms, ttl_ms| {
+            crate::metadata_tokens::PersistedPresentation {
+                source: source.into(),
+                display_agent: Some(display_agent.into()),
+                age_ms,
+                display_agent_age_ms: Some(age_ms),
+                ttl_ms,
+                ..Default::default()
+            }
         };
-        terminal
-            .set_agent_metadata(report("a", "old", None))
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-        terminal
-            .set_agent_metadata(report("b", "new", None))
-            .unwrap();
-        terminal
-            .set_agent_metadata(report("c", "short", Some(Duration::from_millis(1))))
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-        let exported = terminal.export_agent_metadata(Instant::now());
-        assert_eq!(exported.len(), 2);
-
         let mut restored = test_terminal();
-        restored.import_agent_metadata(&exported, Instant::now());
+        restored.import_agent_metadata(
+            &[
+                saved("a", "old", 2_000, None),
+                saved("b", "new", 1_000, None),
+                saved("c", "short", 5_000, Some(5_000)),
+                saved("d", "timed", 1_000, Some(60_000)),
+            ],
+            Instant::now(),
+        );
         assert_eq!(restored.effective_display_agent().as_deref(), Some("new"));
         assert!(restored.agent_metadata.contains_key("a"));
         assert!(!restored.agent_metadata.contains_key("c"));
+        assert!(restored.next_agent_metadata_expiry().is_some());
+
+        let exported = restored.export_agent_metadata(Instant::now());
+        assert_eq!(exported.len(), 3);
+        assert!(exported.iter().all(|saved| saved.age_ms >= 1_000));
     }
 }

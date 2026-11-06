@@ -1690,8 +1690,13 @@ mod tests {
     fn layout_fingerprint_ignores_reported_pane_metadata_ages() {
         let mut state = state_with_workspaces(&["one"]);
         report_pane_display_agent(&mut state, "sonnet");
-        let first = layout_fingerprint(&capture_from_state(&state));
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        assert_eq!(first, layout_fingerprint(&capture_from_state(&state)));
+        let mut snapshot = capture_from_state(&state);
+        let first = layout_fingerprint(&snapshot);
+        for pane in snapshot.workspaces[0].tabs[0].panes.values_mut() {
+            let reported = pane.reported_metadata.as_mut().unwrap();
+            reported.presentation[0].age_ms += 60_000;
+            reported.presentation[0].display_agent_age_ms = Some(60_000);
+        }
+        assert_eq!(first, layout_fingerprint(&snapshot));
     }
 }
