@@ -935,7 +935,6 @@ mod tests {
 [ui.workspace_symbols.outside]
 main = "🏠"
 tasks = ["🦄"]
-colors = ["#111111"]
 "##,
         )
         .unwrap();
@@ -972,7 +971,7 @@ colors = ["#111111"]
         assert_eq!(token(0, "symbol"), Some("🏠"));
         assert_eq!(token(0, "color"), None);
         assert_eq!(token(1, "symbol"), Some("🥑"));
-        assert_eq!(token(1, "color"), Some("#111111"));
+        assert!(token(1, "color").is_some_and(|c| c.starts_with('#') && c.len() == 7));
     }
 
     #[test]

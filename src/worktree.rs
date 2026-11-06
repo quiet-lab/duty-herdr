@@ -55,8 +55,8 @@ pub(crate) fn branch_to_path_slug(branch: &str) -> String {
 
 /// Home directory of the server process, read once: the same source as
 /// `expand_tilde_path` (`HOME`; on Windows `USERPROFILE`, then
-/// `HOMEDRIVE`+`HOMEPATH`, then `HOME`). Label paths are formatted on
-/// snapshot and title paths, which must not read the environment per call.
+/// `HOMEDRIVE`+`HOMEPATH`, then `HOME`). Place labels are computed on every
+/// snapshot and title, which must not read the environment per call.
 pub(crate) fn home_dir() -> Option<&'static Path> {
     static HOME: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     HOME.get_or_init(|| home_dir_from_env(cfg!(windows), |key| std::env::var_os(key)).ok())

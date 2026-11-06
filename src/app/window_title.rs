@@ -211,18 +211,18 @@ mod tests {
 
         // Without an agent the manual workspace and tab labels are hidden:
         // both show the place and the foreground process.
-        assert_eq!(app.window_title().as_deref(), Some("/srv/herd//srv/herd"));
+        assert_eq!(app.window_title().as_deref(), Some("herd/herd"));
         root_terminal(&mut app, 0).set_foreground_process(Some("nvim".into()));
         assert_eq!(
             app.window_title().as_deref(),
-            Some("/srv/herd · nvim//srv/herd · nvim")
+            Some("herd · nvim/herd · nvim")
         );
 
         // The manual labels show only while an agent is detected in the tab.
         app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
         assert_eq!(
             app.window_title().as_deref(),
-            Some("/srv/herd · nvim//srv/herd · nvim")
+            Some("herd · nvim/herd · nvim")
         );
         root_terminal(&mut app, 0).set_detected_state(
             Some(crate::detect::Agent::Pi),
@@ -231,13 +231,13 @@ mod tests {
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));
         app.state.workspaces[0].tabs[0].custom_name = None;
         let title = app.window_title().unwrap();
-        assert!(title.starts_with("herd//srv/herd · "), "{title}");
+        assert!(title.starts_with("herd/herd · "), "{title}");
         assert!(!title.ends_with("nvim"), "{title}");
 
         // Without a manual workspace label the agent names the workspace.
         app.state.workspaces[0].custom_name = None;
         let title = app.window_title().unwrap();
-        assert!(title.starts_with("/srv/herd · "), "{title}");
+        assert!(title.starts_with("herd · "), "{title}");
         assert!(!title.contains("nvim"), "{title}");
     }
 
@@ -269,10 +269,10 @@ main = "S"
         root_terminal(&mut app, 1).cwd = "/srv/notes".into();
         root_terminal(&mut app, 1).set_foreground_process(Some("htop".into()));
 
-        assert_eq!(app.window_title_for(0, 0).as_deref(), Some("S /srv/herd"));
+        assert_eq!(app.window_title_for(0, 0).as_deref(), Some("S herd"));
         assert_eq!(
             app.window_title_for(0, 1).as_deref(),
-            Some("S /srv/notes · htop")
+            Some("S notes · htop")
         );
 
         // The workspace token always names the first tab, whichever is active.
@@ -280,7 +280,7 @@ main = "S"
         root_terminal(&mut app, 0).set_foreground_process(Some("nvim".into()));
         assert_eq!(
             app.window_title_for(0, 1).as_deref(),
-            Some("S /srv/herd · nvim|S /srv/notes · htop")
+            Some("S herd · nvim|S notes · htop")
         );
     }
 

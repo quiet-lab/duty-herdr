@@ -1100,27 +1100,23 @@ impl Workspace {
     }
 
     /// Place of the workspace: repository name of the cached Git checkout of the
-    /// first tab's root pane, or its cwd with `~` outside Git. Reads only the
-    /// cached Git identity, never the filesystem.
+    /// first tab's root pane, otherwise the name of its cwd. Never a path. Reads
+    /// only the cached Git identity, never the filesystem.
     pub(crate) fn place_label(&self) -> String {
-        match &self.cached_git_space {
-            Some(space) => {
-                self::git::automatic_workspace_label(&self.cached_identity_cwd, &space.repo_root)
-            }
-            None => self::git::tilde_path(&self.cached_identity_cwd),
-        }
+        self.place_label_for(&self.cached_identity_cwd)
     }
 
-    /// Place of another tab's root pane at `cwd`: the workspace repository name
-    /// while `cwd` lies inside the cached checkout, otherwise `cwd` with `~`.
+    /// Place of a tab's root pane at `cwd`, the single rule of the place: the
+    /// workspace repository name while `cwd` lies inside the cached checkout,
+    /// otherwise the last component of `cwd` (`~` for the home directory).
     /// Per-tab Git discovery would read the filesystem, so a tab in another
-    /// repository shows its path.
+    /// repository shows its directory name.
     pub(crate) fn place_label_for(&self, cwd: &std::path::Path) -> String {
         match &self.cached_git_space {
             Some(space) if cwd.starts_with(&space.repo_root) => {
                 self::git::automatic_workspace_label(cwd, &space.repo_root)
             }
-            _ => self::git::tilde_path(cwd),
+            _ => fallback_label_from_cwd(cwd),
         }
     }
 
@@ -1719,10 +1715,17 @@ mod tests {
         let mut ws = Workspace::test_new("place");
         ws.cached_identity_cwd = PathBuf::from("/srv/plain/dir");
         ws.cached_git_space = None;
-        assert_eq!(ws.place_label(), "/srv/plain/dir");
+        assert_eq!(ws.place_label(), "dir");
         assert_eq!(
             ws.place_label_for(std::path::Path::new("/srv/other")),
-            "/srv/other"
+            "other"
+        );
+        assert_eq!(ws.place_label_for(std::path::Path::new("/")), "/");
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new(
+                "/srv/ocp-dev-stand/results/set-dev2-2"
+            )),
+            "set-dev2-2"
         );
 
         ws.cached_identity_cwd = PathBuf::from("/srv/code/herdr/src/ui");
@@ -1738,9 +1741,28 @@ mod tests {
             ws.place_label_for(std::path::Path::new("/srv/code/herdr/docs")),
             "herdr"
         );
+        // A tab in another repository shows its directory name.
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/code/duty")),
+            "duty"
+        );
         assert_eq!(
             ws.place_label_for(std::path::Path::new("/srv/other")),
-            "/srv/other"
+            "other"
+        );
+    }
+
+    #[test]
+    fn place_label_outside_git_is_home_marker_or_directory_name() {
+        let home = crate::worktree::home_dir().expect("home directory is known");
+        let mut ws = Workspace::test_new("place");
+        ws.cached_git_space = None;
+        ws.cached_identity_cwd = home.to_path_buf();
+        assert_eq!(ws.place_label(), "~");
+        assert_eq!(ws.place_label_for(&home.join("work")), "work");
+        assert_eq!(
+            ws.place_label_for(&home.join("work/a/b/set-dev2-2")),
+            "set-dev2-2"
         );
     }
 

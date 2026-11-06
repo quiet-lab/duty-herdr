@@ -1,10 +1,26 @@
 use serde::{Deserialize, Serialize};
 
+use super::SidebarTokenStyle;
+
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
 pub(crate) const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 31_536_000;
 pub(crate) const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 3_600;
 pub(crate) const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
+
+/// Colors of the tab strip tabs by focus. `$color` and other `$name`
+/// references resolve against the tokens of the tab's workspace, `$panel` is
+/// the panel background. An unset style keeps the theme colors.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TabBarConfig {
+    /// Style of the focused tab of the workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<SidebarTokenStyle>,
+    /// Style of the other tabs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inactive: Option<SidebarTokenStyle>,
+}
 
 fn default_datetime_format() -> String {
     "%H:%M".to_string()
@@ -115,6 +131,50 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_bar_styles_parse_with_fallback_and_reject_unknown_input() {
+        let parsed: TabBarConfig = toml::from_str(
+            r##"
+active = { fg = "$color|#ffffff", bg = "$panel", bold = true }
+inactive = { fg = "$panel", bg = "$color|#ffffff" }
+"##,
+        )
+        .expect("parse tab bar styles");
+        let active = parsed.active.expect("active");
+        assert!(matches!(
+            active.fg,
+            Some(crate::config::SidebarTokenColor::Fallback(_))
+        ));
+        assert_eq!(active.bg, Some(crate::config::SidebarTokenColor::Panel));
+        assert_eq!(active.bold, Some(true));
+        assert!(parsed.inactive.is_some());
+        assert_eq!(
+            toml::from_str::<TabBarConfig>("").unwrap(),
+            TabBarConfig::default()
+        );
+
+        for bad in [
+            r#"active = { fg = "nope" }"#,
+            r##"active = { color = "#fff" }"##,
+            r##"inactive = { bg = "$color | #fff" }"##,
+            r##"focused = { bg = "#fff" }"##,
+            r##"active = "#fff""##,
+        ] {
+            assert!(toml::from_str::<TabBarConfig>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn tab_bar_styles_round_trip_through_serialization() {
+        let parsed: TabBarConfig =
+            toml::from_str(r##"active = { fg = "$color|#fff", bg = "$panel" }"##).expect("parse");
+        let text = toml::to_string(&parsed).expect("serialize");
+        assert_eq!(
+            toml::from_str::<TabBarConfig>(&text).expect("reparse"),
+            parsed
+        );
+    }
 
     #[test]
     fn tab_bar_entries_parse_with_command_defaults() {

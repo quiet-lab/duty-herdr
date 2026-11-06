@@ -93,10 +93,10 @@ mod tests {
             Some("herdr · nvim")
         );
         assert_eq!(
-            facts(Some("🦦"), Some("~/notes"), None)
+            facts(Some("🦦"), Some("notes"), None)
                 .auto_label()
                 .as_deref(),
-            Some("🦦 ~/notes")
+            Some("🦦 notes")
         );
         assert_eq!(
             facts(None, None, Some("nvim")).auto_label().as_deref(),
