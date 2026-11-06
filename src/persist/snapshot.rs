@@ -62,6 +62,10 @@ pub struct WorkspaceSnapshot {
     /// Child `symbol`/`color` pinned by Herdr; see `crate::workspace_symbols`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigned_tokens: Option<crate::workspace_symbols::AssignedWorkspaceTokens>,
+    /// Tokens reported through `workspace report-metadata`, with their sources'
+    /// sequence counters; absent in sessions saved before they were carried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_metadata: Option<crate::metadata_tokens::ReportedMetadata>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -176,6 +180,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             worktree_space: None,
             parent_workspace_id: None,
             assigned_tokens: None,
+            reported_metadata: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -291,6 +296,11 @@ pub fn capture(
     }
 }
 
+fn capture_reported_metadata(ws: &Workspace) -> Option<crate::metadata_tokens::ReportedMetadata> {
+    let tokens = ws.metadata_tokens.export(std::time::Instant::now());
+    (!tokens.is_empty()).then_some(crate::metadata_tokens::ReportedMetadata { tokens })
+}
+
 fn capture_workspace(
     ws: &Workspace,
     terminals: &std::collections::HashMap<
@@ -316,6 +326,7 @@ fn capture_workspace(
         worktree_space: ws.worktree_space.clone(),
         parent_workspace_id: ws.parent_workspace_id.clone(),
         assigned_tokens: ws.assigned_tokens.clone(),
+        reported_metadata: capture_reported_metadata(ws),
         public_pane_numbers: ws
             .public_pane_numbers
             .iter()
@@ -414,6 +425,14 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
 
     let mut value = serde_json::to_value(snapshot).ok()?;
+    // Reported tokens carry remaining lifetimes that differ on every capture.
+    if let Some(workspaces) = value["workspaces"].as_array_mut() {
+        for workspace in workspaces {
+            if let Some(workspace) = workspace.as_object_mut() {
+                workspace.remove("reported_metadata");
+            }
+        }
+    }
     // Sets serialize as arrays; normalize their order as well as JSON object keys.
     let mut collapsed: Vec<_> = snapshot.collapsed_space_keys.iter().collect();
     collapsed.sort_unstable();
@@ -739,6 +758,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
                 public_tab_numbers: vec![1],
@@ -1490,6 +1510,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1523,5 +1544,49 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
         );
+    }
+
+    #[test]
+    fn capture_contract_tracks_reported_workspace_tokens() {
+        let mut state = state_with_workspaces(&["plain", "reported"]);
+        state.workspaces[1].metadata_tokens.patch(
+            HashMap::from([("color".to_owned(), Some("#ffffff".to_owned()))]),
+            None,
+            std::time::Instant::now(),
+        );
+
+        let snapshot = capture_from_state(&state);
+        assert_eq!(snapshot.workspaces[0].reported_metadata, None);
+        let plain = serde_json::to_value(&snapshot.workspaces[0]).unwrap();
+        assert!(plain.get("reported_metadata").is_none());
+        let reported = serde_json::to_value(&snapshot.workspaces[1]).unwrap();
+        assert_eq!(
+            reported["reported_metadata"],
+            serde_json::json!({"tokens": {"color": {"value": "#ffffff"}}})
+        );
+        let read: WorkspaceSnapshot = serde_json::from_value(reported).unwrap();
+        assert_eq!(
+            read.reported_metadata,
+            snapshot.workspaces[1].reported_metadata
+        );
+    }
+
+    #[test]
+    fn layout_fingerprint_ignores_reported_token_lifetimes() {
+        let mut state = state_with_workspaces(&["one"]);
+        let now = std::time::Instant::now();
+        let patch = || HashMap::from([("note".to_owned(), Some("x".to_owned()))]);
+        state.workspaces[0].metadata_tokens.patch(
+            patch(),
+            Some(std::time::Duration::from_secs(60)),
+            now,
+        );
+        let first = layout_fingerprint(&capture_from_state(&state));
+        state.workspaces[0].metadata_tokens.patch(
+            patch(),
+            Some(std::time::Duration::from_secs(30)),
+            now,
+        );
+        assert_eq!(first, layout_fingerprint(&capture_from_state(&state)));
     }
 }

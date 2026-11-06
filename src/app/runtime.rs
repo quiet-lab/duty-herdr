@@ -66,6 +66,7 @@ impl App {
             self.emit_pane_updated(ws_idx, pane_id);
         }
         for ws_idx in workspaces {
+            self.state.mark_session_dirty();
             self.emit_workspace_token_updated(ws_idx);
         }
         self.sync_agent_metadata_deadline();
