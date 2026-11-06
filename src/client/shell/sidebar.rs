@@ -813,32 +813,24 @@ pub(in crate::client::shell) fn workspace_rows(
             place: facts.place,
             app: facts.app,
             auto_label: auto_label.as_deref(),
+            first_tab_active: labeled.active_later_tab(workspace_index).is_none(),
         },
     );
     let tab_row = labeled
         .active_later_tab(workspace_index)
         .filter(|&tab_index| super::labels::tab_has_facts(&labeled.snapshot.tabs[tab_index]))
-        .map(|tab_index| {
-            let style = rows
-                .first()
-                .and_then(|row| {
-                    row.iter().find(|token| {
-                        matches!(token.kind, crate::ui::ResolvedTokenKind::Workspace(_))
-                    })
-                })
-                .map(|token| token.style)
-                .unwrap_or_default();
+        .and_then(|tab_index| {
+            let text = labeled.tab_label(tab_index).into_owned();
+            let style = crate::ui::sidebar_space_tab_row_style(config, &text, &token_values)?;
             let index = rows.len().min(1);
             rows.insert(
                 index,
                 vec![crate::ui::ResolvedToken {
-                    kind: crate::ui::ResolvedTokenKind::Workspace(
-                        labeled.tab_label(tab_index).into_owned(),
-                    ),
+                    kind: crate::ui::ResolvedTokenKind::Workspace(text),
                     style,
                 }],
             );
-            index
+            Some(index)
         });
     WorkspaceRows { rows, tab_row }
 }

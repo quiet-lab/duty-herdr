@@ -147,6 +147,8 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) place: Option<&'a str>,
     pub(crate) app: Option<&'a str>,
     pub(crate) auto_label: Option<&'a str>,
+    /// Whether the first tab, which the workspace row describes, is active.
+    pub(crate) first_tab_active: bool,
 }
 
 pub(crate) fn space_rows(
@@ -197,10 +199,11 @@ pub(crate) fn space_rows(
                             .map(ResolvedTokenKind::Custom),
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
+                    let active = first_tab_token(token).then_some(context.first_tab_active);
                     let style = kind
                         .text_value()
                         .map_or(Some(style.resolved(context.tokens)), |value| {
-                            configured.style_for_value(value, context.tokens, None)
+                            configured.style_for_value(value, context.tokens, active)
                         })?;
                     Some(ResolvedToken::new(kind, style))
                 })
@@ -208,6 +211,40 @@ pub(crate) fn space_rows(
             (!resolved.is_empty()).then_some(resolved)
         })
         .collect()
+}
+
+/// Space tokens that describe the first tab of the workspace.
+fn first_tab_token(token: &SpaceSidebarToken) -> bool {
+    matches!(
+        token,
+        SpaceSidebarToken::Workspace
+            | SpaceSidebarToken::Place
+            | SpaceSidebarToken::App
+            | SpaceSidebarToken::AutoLabel
+    )
+}
+
+/// Style of the row of an active tab other than the first one: the style of
+/// the first configured workspace-label token of the first row, evaluated for
+/// `label` as an active tab. `None` when a rule hides it.
+pub(crate) fn space_tab_row_style(
+    config: &SpacesSidebarConfig,
+    label: &str,
+    tokens: &std::collections::HashMap<String, String>,
+) -> Option<SidebarTokenStyle> {
+    let Some(configured) = config.rows.first().and_then(|row| {
+        row.iter().find(|configured| {
+            matches!(
+                configured.parts().0,
+                SpaceSidebarToken::Workspace
+                    | SpaceSidebarToken::Place
+                    | SpaceSidebarToken::AutoLabel
+            )
+        })
+    }) else {
+        return Some(SidebarTokenStyle::default());
+    };
+    configured.style_for_value(label, tokens, Some(true))
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
@@ -399,6 +436,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     place: None,
                     app: None,
                     auto_label: None,
+                    first_tab_active: true,
                 },
             );
             assert_eq!(spaces[0][0].style.dim, (value == "20").then_some(true));
@@ -452,6 +490,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     place: None,
                     app: None,
                     auto_label: None,
+                    first_tab_active: true,
                 },
             );
             assert_eq!(rows.len(), count);
@@ -625,6 +664,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     place: None,
                     app: None,
                     auto_label: None,
+                    first_tab_active: true,
                 },
             ),
             vec![vec![
@@ -656,6 +696,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     place: None,
                     app: None,
                     auto_label: None,
+                    first_tab_active: true,
                 },
             ),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(
@@ -693,6 +734,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     place: None,
                     app: None,
                     auto_label: None,
+                    first_tab_active: true,
                 },
             )
         };
@@ -751,6 +793,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             place,
             app,
             auto_label,
+            first_tab_active: true,
         };
         assert_eq!(
             space_rows(
@@ -819,25 +862,38 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             // Tokens that show no tab never match `active`.
             assert_eq!(workspace.style.bold, None);
         }
+        // In spaces the workspace row describes the first tab.
         let spaces: SpacesSidebarConfig = toml::from_str(
-            r#"rows = [[{ token = "workspace", rules = [{ active = true, bold = true }, { active = false, bold = false }] }]]"#,
+            r#"rows = [[{ token = "workspace", rules = [{ active = true, bold = true }, { active = false, bold = false }] }, { token = "branch", rules = [{ active = true, bold = true }, { active = false, bold = false }] }]]"#,
         )
         .unwrap();
-        let rows = space_rows(
-            &spaces,
-            SpaceTokenContext {
-                workspace: "repo",
-                branch: None,
-                state_text: "idle",
-                ahead_behind: None,
-                tokens: &entry.tokens,
-                suppress_git_details: false,
-                symbol: None,
-                place: None,
-                app: None,
-                auto_label: None,
-            },
-        );
-        assert_eq!(rows[0][0].style.bold, None);
+        for first_tab_active in [true, false] {
+            let rows = space_rows(
+                &spaces,
+                SpaceTokenContext {
+                    workspace: "repo",
+                    branch: Some("main"),
+                    state_text: "idle",
+                    ahead_behind: None,
+                    tokens: &entry.tokens,
+                    suppress_git_details: false,
+                    symbol: None,
+                    place: None,
+                    app: None,
+                    auto_label: None,
+                    first_tab_active,
+                },
+            );
+            assert_eq!(rows[0][0].style.bold, Some(first_tab_active));
+            assert_eq!(rows[0][1].style.bold, None);
+        }
+        // The row of an active later tab matches `active = true`; `hide` hides it.
+        let style = space_tab_row_style(&spaces, "notes", &entry.tokens).unwrap();
+        assert_eq!(style.bold, Some(true));
+        let hidden: SpacesSidebarConfig = toml::from_str(
+            r#"rows = [[{ token = "auto_label", rules = [{ active = true, hide = true }] }]]"#,
+        )
+        .unwrap();
+        assert_eq!(space_tab_row_style(&hidden, "notes", &entry.tokens), None);
     }
 }

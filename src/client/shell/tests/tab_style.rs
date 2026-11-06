@@ -178,3 +178,40 @@ fn filled_space_row_spans_the_block_and_yields_to_the_navigation_cursor() {
     let label = column_of(&buffer, rect, "@ herdr");
     assert_eq!(buffer[(label, rect.y)].fg, RED);
 }
+
+#[test]
+fn spaces_header_and_active_tab_row_follow_the_active_rule() {
+    let config = tab_style_config(
+        r#"[["state_icon", { token = "workspace", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] }]]"#,
+    );
+    let unfocused = |second_active| {
+        let mut projected = two_tab_snapshot(second_active);
+        projected.workspaces[0].focused = false;
+        projected
+    };
+    // First tab active: the header row has the panel background and red text.
+    let (state, buffer) = compose_buffer(&config, unfocused(false));
+    let rect = state.hits.workspaces[0].rect;
+    assert_eq!(rect.height, 1);
+    let label = column_of(&buffer, rect, "@ herdr");
+    assert_eq!(buffer[(label, rect.y)].fg, RED);
+    assert_eq!(buffer[(rect.x, rect.y)].bg, state.config.palette.sidebar_bg);
+
+    // Later tab active: the header (first tab) is inactive and inverted, the
+    // tab row below it is active.
+    let (state, buffer) = compose_buffer(&config, unfocused(true));
+    let rect = state.hits.workspaces[0].rect;
+    assert_eq!(rect.height, 2);
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, RED, "{x}");
+    }
+    let label = column_of(&buffer, rect, "@ herdr");
+    assert_eq!(buffer[(label, rect.y)].fg, state.config.palette.panel_bg);
+    let tab_row = Rect::new(rect.x, rect.y + 1, rect.width, 1);
+    let tab = column_of(&buffer, tab_row, "@ notes");
+    assert_eq!(buffer[(tab, tab_row.y)].fg, RED);
+    assert_eq!(
+        buffer[(tab_row.x, tab_row.y)].bg,
+        state.config.palette.sidebar_bg
+    );
+}
