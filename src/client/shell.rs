@@ -267,6 +267,136 @@ fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
+/// Converts the shell chrome `buffer` into a frame with the pane surface `source`
+/// placed at `area`.
+///
+/// The result equals `FrameData::from_ratatui_buffer_with_hyperlinks(buffer, None, &[])`
+/// followed by `blit_pane_surface(&mut frame, source, area)`, but chrome cells that
+/// the pane surface covers are never converted, allocated and then dropped: every
+/// output cell is produced once. Geometry the single pass does not cover (a buffer
+/// not anchored at the origin, a pane surface reaching past the frame) takes the
+/// two-step path.
+///
+/// Output cells are taken from `recycled` while it lasts and overwritten in place,
+/// so their symbols reuse earlier allocations.
+fn compose_pane_surface_frame(
+    buffer: &Buffer,
+    source: &FrameData,
+    area: Rect,
+    recycled: &mut Vec<crate::protocol::CellData>,
+) -> FrameData {
+    let width = usize::from(buffer.area.width);
+    let height = usize::from(buffer.area.height);
+    let copy_width = usize::from(source.width.min(area.width));
+    let copy_height = usize::from(source.height.min(area.height));
+    let left = usize::from(area.x);
+    let top = usize::from(area.y);
+    if buffer.area.x != 0
+        || buffer.area.y != 0
+        || buffer.content.len() != width * height
+        || left + copy_width > width
+        || top + copy_height > height
+    {
+        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(buffer, None, &[]);
+        blit_pane_surface(&mut frame, source, area);
+        return frame;
+    }
+    let source_width = usize::from(source.width);
+    let source_hyperlinks = source.hyperlinks.len();
+    let mut cells = Vec::with_capacity(width * height);
+    let pane_cell = |recycled: &mut Vec<crate::protocol::CellData>,
+                     pane: &crate::protocol::CellData| {
+        let mut cell = match recycled.pop() {
+            Some(mut cell) => {
+                cell.clone_from(pane);
+                cell
+            }
+            None => pane.clone(),
+        };
+        cell.hyperlink = shifted_hyperlink(cell.hyperlink, source_hyperlinks, 0);
+        cell
+    };
+    for (y, row) in buffer.content.chunks_exact(width.max(1)).enumerate() {
+        if !(top..top + copy_height).contains(&y) {
+            cells.extend(row.iter().map(|cell| chrome_cell(recycled, cell)));
+            continue;
+        }
+        let source_start = (y - top) * source_width;
+        cells.extend(row[..left].iter().map(|cell| chrome_cell(recycled, cell)));
+        match source.cells.get(source_start..source_start + copy_width) {
+            Some(source_row) => {
+                cells.extend(source_row.iter().map(|pane| pane_cell(recycled, pane)));
+            }
+            None => {
+                for (col, chrome) in row[left..left + copy_width].iter().enumerate() {
+                    let cell = match source.cells.get(source_start + col) {
+                        Some(pane) => pane_cell(recycled, pane),
+                        None => chrome_cell(recycled, chrome),
+                    };
+                    cells.push(cell);
+                }
+            }
+        }
+        cells.extend(
+            row[left + copy_width..]
+                .iter()
+                .map(|cell| chrome_cell(recycled, cell)),
+        );
+    }
+    if recycled.is_empty() {
+        // Release the emptied pool's allocation instead of keeping it until the next
+        // surface replacement.
+        *recycled = Vec::new();
+    }
+    FrameData {
+        cells,
+        width: buffer.area.width,
+        height: buffer.area.height,
+        cursor: projected_surface_cursor(source, area),
+        hyperlinks: source.hyperlinks.clone(),
+        graphics: Vec::new(),
+    }
+}
+
+/// Hyperlink index of a pane surface cell in a frame whose hyperlink table holds
+/// the surface's `source_len` entries from `base` on; an index past the surface's
+/// table is dropped.
+fn shifted_hyperlink(index: Option<u32>, source_len: usize, base: u32) -> Option<u32> {
+    index.and_then(|index| ((index as usize) < source_len).then_some(base + index))
+}
+
+/// Cursor of the pane surface `source` placed at `area`, kept only inside the copied
+/// part of the surface.
+fn projected_surface_cursor(
+    source: &FrameData,
+    area: Rect,
+) -> Option<crate::protocol::CursorState> {
+    let copy_width = source.width.min(area.width);
+    let copy_height = source.height.min(area.height);
+    source.cursor.as_ref().and_then(|cursor| {
+        (cursor.x < copy_width && cursor.y < copy_height).then(|| crate::protocol::CursorState {
+            x: area.x + cursor.x,
+            y: area.y + cursor.y,
+            visible: cursor.visible,
+            shape: cursor.shape,
+        })
+    })
+}
+
+/// Converts a chrome cell, reusing a recycled cell when one is left.
+fn chrome_cell(
+    recycled: &mut Vec<crate::protocol::CellData>,
+    cell: &ratatui::buffer::Cell,
+) -> crate::protocol::CellData {
+    match recycled.pop() {
+        Some(mut recycled) => {
+            recycled.assign_from_ratatui_cell(cell);
+            recycled
+        }
+        None => crate::protocol::CellData::from_ratatui_cell(cell),
+    }
+}
+
 fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
     let copy_width = source.width.min(area.width);
     let copy_height = source.height.min(area.height);
@@ -285,21 +415,16 @@ fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
             ) else {
                 continue;
             };
-            *target_cell = source_cell.clone();
-            target_cell.hyperlink = source_cell.hyperlink.and_then(|index| {
-                ((index as usize) < source.hyperlinks.len()).then_some(hyperlink_base + index)
-            });
+            target_cell.clone_from(source_cell);
+            target_cell.hyperlink = shifted_hyperlink(
+                source_cell.hyperlink,
+                source.hyperlinks.len(),
+                hyperlink_base,
+            );
         }
     }
 
-    target.cursor = source.cursor.as_ref().and_then(|cursor| {
-        (cursor.x < copy_width && cursor.y < copy_height).then(|| crate::protocol::CursorState {
-            x: area.x + cursor.x,
-            y: area.y + cursor.y,
-            visible: cursor.visible,
-            shape: cursor.shape,
-        })
-    });
+    target.cursor = projected_surface_cursor(source, area);
     target.graphics.clear();
 }
 

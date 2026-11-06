@@ -872,6 +872,10 @@ pub(crate) struct ClientShellState {
     /// A future projection surface waits here until its matching snapshot arrives. The visible
     /// pane surface always remains an exact snapshot pair.
     pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
+    /// Cells of the replaced pane surface frame. Composition overwrites them in place
+    /// instead of allocating a symbol for every cell of the next frame; bounded by one
+    /// frame.
+    pub(super) recycled_cells: Vec<crate::protocol::CellData>,
     pub(super) graphics: crate::kitty_graphics::surface::ClientState,
     pub(super) graphics_cell_size: crate::kitty_graphics::HostCellSize,
     pub(super) popup_terminal_id: Option<String>,
@@ -1043,6 +1047,7 @@ impl ClientShellState {
             pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
+            recycled_cells: Vec::new(),
             graphics: crate::kitty_graphics::surface::ClientState::new(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
@@ -1244,8 +1249,7 @@ impl ClientShellState {
 
     pub(super) fn reset_endpoint_projection(&mut self) {
         self.hits = ShellHitMap::default();
-        self.pane_surface = None;
-        self.pending_pane_surface = None;
+        self.clear_pane_surfaces();
         self.input_leases = ClientInputLeases::default();
         self.popup_terminal_id = None;
         self.chrome_drag = None;
@@ -1812,7 +1816,11 @@ impl ClientShellState {
         self.popup_terminal_id = next_popup;
         self.graphics
             .set_scene(std::mem::take(&mut surface.graphics));
-        self.pane_surface = Some(surface);
+        if let Some(previous) = self.pane_surface.replace(surface) {
+            if previous.frame.cells.len() > self.recycled_cells.len() {
+                self.recycled_cells = previous.frame.cells;
+            }
+        }
         self.pane_surface_generation = self.active_snapshot_generation;
         self.invalidate_link_hover();
         self.resume_mobile_switcher_if_ready();
@@ -1925,9 +1933,16 @@ impl ClientShellState {
             )
     }
 
-    pub(crate) fn invalidate_pane_surface(&mut self) {
+    /// Drops the visible and the pending pane surface together with the cells kept
+    /// for reuse, so no frame outlives its surface.
+    pub(super) fn clear_pane_surfaces(&mut self) {
         self.pane_surface = None;
         self.pending_pane_surface = None;
+        self.recycled_cells = Vec::new();
+    }
+
+    pub(crate) fn invalidate_pane_surface(&mut self) {
+        self.clear_pane_surfaces();
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
     }

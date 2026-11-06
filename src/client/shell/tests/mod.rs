@@ -266,6 +266,7 @@ mod keybindings_settings;
 mod link_hover;
 mod mobile;
 mod mouse_selection;
+mod pane_surface_frame;
 mod popup_focus_projection;
 mod space_labels;
 mod startup_overlays;
