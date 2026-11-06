@@ -252,6 +252,46 @@ impl AppState {
         }
         false
     }
+
+    /// Makes `pane_id` the focused pane of its tab and that tab the active
+    /// tab of its workspace without changing the focused workspace.
+    ///
+    /// In the focused workspace this is `focus_pane_in_workspace`. In another
+    /// workspace only that workspace's own state changes: panes are not marked
+    /// seen and the previous-focus history is untouched, because nobody looks
+    /// at the workspace until it is focused. A zoomed tab stays zoomed and
+    /// shows the activated pane. Returns `None` when the pane is not found.
+    pub(crate) fn activate_pane_in_workspace(
+        &mut self,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> Option<PaneActivation> {
+        let ws = self.workspaces.get(ws_idx)?;
+        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        let tab_changed = ws.active_tab != tab_idx;
+        let focus_changed = ws.tabs.get(tab_idx)?.layout.focused() != pane_id;
+        if self.active == Some(ws_idx) {
+            self.focus_pane_in_workspace(ws_idx, pane_id);
+        } else if tab_changed || focus_changed {
+            let ws = self.workspaces.get_mut(ws_idx)?;
+            ws.active_tab = tab_idx;
+            ws.tabs.get_mut(tab_idx)?.layout.focus_pane(pane_id);
+            self.mark_session_dirty();
+        }
+        Some(PaneActivation {
+            tab_idx,
+            tab_changed,
+            focus_changed,
+        })
+    }
+}
+
+/// Outcome of [`AppState::activate_pane_in_workspace`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaneActivation {
+    pub tab_idx: usize,
+    pub tab_changed: bool,
+    pub focus_changed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -4832,5 +4872,162 @@ mod tests {
         assert!(!deferred);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "notes");
+    }
+
+    /// Two workspaces; the second has two tabs, the second tab split in two.
+    /// Returns the state, the second workspace's first-tab root and the two
+    /// panes of its second tab.
+    fn app_for_pane_activation() -> (AppState, PaneId, PaneId, PaneId) {
+        let mut state = app_with_workspaces(&["seen", "background"]);
+        let background = &mut state.workspaces[1];
+        let first_root = background.tabs[0].root_pane;
+        let second_tab = background.test_add_tab(Some("second"));
+        background.switch_tab(second_tab);
+        let second_root = background.tabs[second_tab].root_pane;
+        let second_split = background.test_split(Direction::Horizontal);
+        background.tabs[second_tab].layout.focus_pane(second_root);
+        background.switch_tab(0);
+        for pane in background.tabs[second_tab].panes.values_mut() {
+            pane.seen = false;
+        }
+        state.ensure_test_terminals();
+        state.assert_invariants_for_test();
+        (state, first_root, second_root, second_split)
+    }
+
+    #[test]
+    fn activate_pane_in_background_workspace_keeps_focused_workspace() {
+        let (mut state, _, _, second_split) = app_for_pane_activation();
+        let previous_focus = state.previous_pane_focus.clone();
+        let focus_before = state.current_pane_focus_target();
+
+        let activation = state
+            .activate_pane_in_workspace(1, second_split)
+            .expect("pane exists");
+
+        assert_eq!(
+            activation,
+            PaneActivation {
+                tab_idx: 1,
+                tab_changed: true,
+                focus_changed: true,
+            }
+        );
+        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.current_pane_focus_target(), focus_before);
+        assert_eq!(state.previous_pane_focus, previous_focus);
+        let background = &state.workspaces[1];
+        assert_eq!(background.active_tab, 1);
+        assert_eq!(background.focused_pane_id(), Some(second_split));
+        assert!(
+            background.tabs[1].panes.values().all(|pane| !pane.seen),
+            "nobody looked at the background tab"
+        );
+        state.assert_invariants_for_test();
+
+        // Switching to the workspace lands on the activated pane.
+        state.switch_workspace(1);
+        assert_eq!(
+            state
+                .current_pane_focus_target()
+                .map(|target| target.pane_id),
+            Some(second_split)
+        );
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn activate_pane_in_focused_workspace_moves_focus_like_pane_focus() {
+        let (mut activated, _, second_root, second_split) = app_for_pane_activation();
+        let (mut focused, _, _, focused_split) = app_for_pane_activation();
+        activated.switch_workspace(1);
+        focused.switch_workspace(1);
+
+        let activation = activated
+            .activate_pane_in_workspace(1, second_split)
+            .expect("pane exists");
+        assert!(focused.focus_pane_in_workspace(1, focused_split));
+
+        assert!(activation.tab_changed && activation.focus_changed);
+        assert_eq!(activated.active, Some(1));
+        assert_eq!(activated.workspaces[1].active_tab, 1);
+        assert_eq!(
+            activated
+                .current_pane_focus_target()
+                .map(|target| target.pane_id),
+            Some(second_split)
+        );
+        assert_eq!(
+            focused
+                .current_pane_focus_target()
+                .map(|target| target.pane_id),
+            Some(focused_split)
+        );
+        // Both record the previously focused pane of the workspace's first tab.
+        assert_eq!(
+            activated
+                .previous_pane_focus
+                .as_ref()
+                .map(|target| target.pane_id),
+            Some(activated.workspaces[1].tabs[0].root_pane)
+        );
+        assert_eq!(
+            focused
+                .previous_pane_focus
+                .as_ref()
+                .map(|target| target.pane_id),
+            Some(focused.workspaces[1].tabs[0].root_pane)
+        );
+        assert_ne!(second_root, second_split);
+        activated.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn activate_pane_reports_unchanged_focus_and_keeps_zoom() {
+        let (mut state, _, second_root, second_split) = app_for_pane_activation();
+        state.workspaces[1].tabs[1].zoomed = true;
+        state.session_dirty = false;
+
+        let first = state
+            .activate_pane_in_workspace(1, second_split)
+            .expect("pane exists");
+        assert!(first.tab_changed && first.focus_changed);
+        assert!(state.workspaces[1].tabs[1].zoomed, "zoom is preserved");
+        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_split));
+        assert!(state.session_dirty);
+
+        state.session_dirty = false;
+        let again = state
+            .activate_pane_in_workspace(1, second_split)
+            .expect("pane exists");
+        assert_eq!(
+            again,
+            PaneActivation {
+                tab_idx: 1,
+                tab_changed: false,
+                focus_changed: false,
+            }
+        );
+        assert!(!state.session_dirty, "no-op keeps the session clean");
+
+        let back = state
+            .activate_pane_in_workspace(1, second_root)
+            .expect("pane exists");
+        assert!(!back.tab_changed && back.focus_changed);
+        assert_eq!(state.workspaces[1].focused_pane_id(), Some(second_root));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn activate_pane_rejects_unknown_pane_and_workspace() {
+        let (mut state, _, _, second_split) = app_for_pane_activation();
+        let unknown = PaneId::alloc();
+
+        assert_eq!(state.activate_pane_in_workspace(1, unknown), None);
+        assert_eq!(state.activate_pane_in_workspace(0, second_split), None);
+        assert_eq!(state.activate_pane_in_workspace(9, second_split), None);
+        assert_eq!(state.workspaces[1].active_tab, 0);
+        state.assert_invariants_for_test();
     }
 }

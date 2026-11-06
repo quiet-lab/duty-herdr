@@ -306,6 +306,13 @@ mod tests {
                 json!({"mode": "toggle"}),
             ),
             (
+                "activate",
+                vec!["w2:p3"],
+                "cli:pane:activate",
+                "pane.activate",
+                json!({"pane_id": "w2:p3"}),
+            ),
+            (
                 "read",
                 vec!["pane"],
                 "cli:pane:read",
@@ -427,7 +434,7 @@ mod tests {
     fn pane_projection_dash_leading_targets_and_empty_values() {
         let params = parse_pane_split_args(&["-literal", "--direction", "right"], None);
         assert_eq!(params.target_pane_id.as_deref(), Some("-literal"));
-        for name in ["get", "close", "zoom"] {
+        for name in ["get", "close", "zoom", "activate"] {
             let json = serde_json::to_value(request(name, &["-literal"]).unwrap()).unwrap();
             assert_eq!(json["params"]["pane_id"], "-literal");
         }
@@ -765,6 +772,16 @@ mod tests {
                 assert!(request(name, &values).is_err());
             }
         }
+    }
+
+    #[test]
+    fn parse_pane_activate_requires_a_pane() {
+        let Method::PaneActivate(target) = request("activate", &["w2:p3"]).unwrap().method else {
+            panic!("expected pane activate");
+        };
+        assert_eq!(target.pane_id, "w2:p3");
+        assert!(request("activate", &[]).is_err());
+        assert!(request("activate", &["--direction", "left"]).is_err());
     }
 
     #[test]

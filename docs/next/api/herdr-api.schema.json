@@ -6416,6 +6416,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.activate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7887,6 +7903,55 @@
             "busy"
           ],
           "type": "string"
+        },
+        "PaneActivateResult": {
+          "description": "Result of `pane.activate`: the pane became the focused pane of its tab and\nthat tab the active tab of its workspace; no client changed workspace.",
+          "properties": {
+            "changed": {
+              "description": "Whether the active tab or the focused pane of the tab changed.",
+              "type": "boolean"
+            },
+            "focus_changed": {
+              "description": "Whether the pane became the focused pane of its tab.",
+              "type": "boolean"
+            },
+            "pane": {
+              "$ref": "#/schemas/success_response/$defs/PaneInfo"
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "tab_changed": {
+              "description": "Whether the pane's tab became the workspace's active tab.",
+              "type": "boolean"
+            },
+            "tab_id": {
+              "type": "string"
+            },
+            "workspace_focused": {
+              "description": "Whether the pane's workspace is the server's focused workspace.",
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "type": "string"
+            },
+            "zoomed": {
+              "description": "Whether the tab is zoomed; a zoomed tab shows the activated pane.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "changed",
+            "tab_changed",
+            "focus_changed",
+            "pane_id",
+            "workspace_id",
+            "tab_id",
+            "zoomed",
+            "workspace_focused",
+            "pane"
+          ],
+          "type": "object"
         },
         "PaneDirection": {
           "enum": [
@@ -9746,6 +9811,22 @@
               "required": [
                 "type",
                 "zoom"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "activation": {
+                  "$ref": "#/schemas/success_response/$defs/PaneActivateResult"
+                },
+                "type": {
+                  "const": "pane_activate",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "activation"
               ],
               "type": "object"
             },

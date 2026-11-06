@@ -256,6 +256,11 @@ mod tests {
         );
 
         assert_eq!(
+            actual.remove("pane.activate").as_deref(),
+            Some("37a9ad81758217cc29d65f455ac4a3a1b1d63bb5afc42e7d5cce029b3e6107d8")
+        );
+
+        assert_eq!(
             actual.remove("workspace.create_child").as_deref(),
             Some("1ac1d673c50832f7d3b182650e88a913ab4d9f6c7d58af03e6cd52a90e883bd0")
         );

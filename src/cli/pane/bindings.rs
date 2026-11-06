@@ -406,6 +406,7 @@ impl Leaf {
             "move" => command.group(clap::ArgGroup::new("destination").args(["tab", "new-tab", "new-workspace"]).required(true)),
             "send-text" => command.after_help("next: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call"),
             "send-keys" => command.after_help("Use esc as the canonical Escape key name; escape is also accepted."),
+            "activate" => command.after_help("The pane becomes the focused pane of its tab and that tab the active tab of its workspace. No client switches workspace: a client looking at the workspace sees the focus move at once, others find it there when they switch. A zoomed tab stays zoomed and shows the pane."),
             "wait-output" => command.after_help("The selected snapshot is searched immediately, including existing output, then polled. Without --timeout, this waits indefinitely."),
             _ => command,
         }
@@ -570,6 +571,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         Json,
         PaneZoomProjection,
         PaneZoom
+    ),
+    leaf!(
+        "activate",
+        "Focus a pane inside its workspace without switching clients",
+        "cli:pane:activate",
+        Json,
+        PaneTargetProjection,
+        PaneActivate
     ),
     Leaf {
         name: "read",

@@ -103,6 +103,12 @@ impl ClientShellLocation {
 
     pub(crate) fn focus_tab(&mut self, workspace_id: String, tab_id: String) {
         self.focused_workspace_id = Some(workspace_id.clone());
+        self.activate_tab(workspace_id, tab_id);
+    }
+
+    /// Makes `tab_id` this client's active tab of `workspace_id` without
+    /// changing which workspace the client looks at.
+    pub(crate) fn activate_tab(&mut self, workspace_id: String, tab_id: String) {
         self.active_tab_ids.insert(workspace_id, tab_id);
     }
 

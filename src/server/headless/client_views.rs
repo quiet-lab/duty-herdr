@@ -185,6 +185,57 @@ impl HeadlessServer {
         self.send_shell_focus_transitions(&lost, &gained);
     }
 
+    /// Projects a successful `pane.activate` onto every shell client: the
+    /// pane's tab becomes each client's active tab of that workspace, so a
+    /// client looking at the workspace sees the focus move at once and the
+    /// others find it there when they switch. No client changes workspace.
+    /// Returns whether the activation was found applied.
+    pub(super) fn activate_pane_in_shell_locations(&mut self, pane_id: &str) -> bool {
+        let Some((workspace_index, pane)) = self.app.parse_pane_id(pane_id) else {
+            return false;
+        };
+        let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
+            return false;
+        };
+        let Some(tab_index) = workspace.find_tab_index_for_pane(pane) else {
+            return false;
+        };
+        // The request failed when the pane is not the focus of the active tab.
+        if workspace.active_tab != tab_index || workspace.tabs[tab_index].layout.focused() != pane {
+            return false;
+        }
+        let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) else {
+            return false;
+        };
+        let workspace_id = self.app.public_workspace_id(workspace_index);
+        let mut watched = false;
+        for client in self
+            .clients
+            .values_mut()
+            .filter(|client| client.is_shell_client())
+        {
+            if let Some(location) = client.shell_location.as_mut() {
+                location.activate_tab(workspace_id.clone(), tab_id.clone());
+                watched |= location.focused_workspace_id.as_deref() == Some(&workspace_id);
+            }
+        }
+        // A client looking at the workspace now shows the tab: its panes are seen.
+        if watched {
+            if let Some(tab) = self
+                .app
+                .state
+                .workspaces
+                .get_mut(workspace_index)
+                .and_then(|workspace| workspace.tabs.get_mut(tab_index))
+            {
+                for pane in tab.panes.values_mut() {
+                    pane.seen = true;
+                }
+            }
+        }
+        true
+    }
+
     pub(super) fn focus_shell_client_on_tab(&mut self, client_id: u64, tab_id: &str) -> bool {
         let Some((workspace_index, _)) = self.app.parse_tab_id(tab_id) else {
             return false;
@@ -255,6 +306,7 @@ impl HeadlessServer {
                 | Method::PaneCopySearch(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneFocus(_)
+                | Method::PaneActivate(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneInputSet(_)
                 | Method::PaneLinkActivate(_)
@@ -294,6 +346,7 @@ impl HeadlessServer {
                 | Method::PaneClose(_)
                 | Method::PaneEditScrollback(_)
                 | Method::PaneFocus(_)
+                | Method::PaneActivate(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneResize(_)
                 | Method::PaneSplit(_)
@@ -863,8 +916,24 @@ impl HeadlessServer {
             let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
             (original, proxy_rx)
         });
+        let activation = match &msg.request.method {
+            api::schema::Method::PaneActivate(target) => Some((
+                target.pane_id.clone(),
+                self.shell_focus_targets(),
+                self.focused_shell_tabs(),
+            )),
+            _ => None,
+        };
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false);
+        if let Some((pane_id, focus_before, focused_tabs_before)) = activation {
+            if self.activate_pane_in_shell_locations(&pane_id) {
+                let (lost, gained) =
+                    self.shell_location_focus_transitions(focus_before, &focused_tabs_before);
+                self.app.accept_current_focus_with_api_events();
+                self.send_shell_focus_transitions(&lost, &gained);
+            }
+        }
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
@@ -916,7 +985,12 @@ impl HeadlessServer {
         let focused_tabs_before = self.focused_shell_tabs();
         let method_claims_geometry = Self::shell_endpoint_claims_geometry(&msg.request.method);
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let all_focus_before = reconcile.then(|| self.shell_focus_targets());
+        let activated_pane_id = match &msg.request.method {
+            api::schema::Method::PaneActivate(target) => Some(target.pane_id.clone()),
+            _ => None,
+        };
+        let all_focus_before =
+            (reconcile || activated_pane_id.is_some()).then(|| self.shell_focus_targets());
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
         self.set_default_shell_target_from_client(client_id);
@@ -924,6 +998,9 @@ impl HeadlessServer {
         let popup_owner = self.shell_tab_id_for_client(client_id);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
         self.focus_shell_client_on_default_target(client_id);
+        if let Some(pane_id) = activated_pane_id.as_deref() {
+            self.activate_pane_in_shell_locations(pane_id);
+        }
         if !popup_before && self.app.state.popup_pane.is_some() {
             self.popup_owner_tab_id = popup_owner;
         }
@@ -949,8 +1026,9 @@ impl HeadlessServer {
                     .emit_focus_api_events(target.workspace_index, target.pane_id);
             }
         }
+        // An activation can show another tab to every client on that workspace.
         let geometry_changed = method_claims_geometry
-            && if reconcile {
+            && if reconcile || activated_pane_id.is_some() {
                 self.reapply_controlled_shell_tab_geometry(false)
             } else {
                 self.claim_shell_tab_geometry(client_id, false)

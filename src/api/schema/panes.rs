@@ -622,6 +622,26 @@ pub enum PaneMoveReason {
     ZoomedTab,
 }
 
+/// Result of `pane.activate`: the pane became the focused pane of its tab and
+/// that tab the active tab of its workspace; no client changed workspace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneActivateResult {
+    /// Whether the active tab or the focused pane of the tab changed.
+    pub changed: bool,
+    /// Whether the pane's tab became the workspace's active tab.
+    pub tab_changed: bool,
+    /// Whether the pane became the focused pane of its tab.
+    pub focus_changed: bool,
+    pub pane_id: String,
+    pub workspace_id: String,
+    pub tab_id: String,
+    /// Whether the tab is zoomed; a zoomed tab shows the activated pane.
+    pub zoomed: bool,
+    /// Whether the pane's workspace is the server's focused workspace.
+    pub workspace_focused: bool,
+    pub pane: Box<PaneInfo>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneZoomResult {
     pub changed: bool,
