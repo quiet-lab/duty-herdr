@@ -87,7 +87,7 @@ check_load() {
   l1=$(cut -d' ' -f1 /proc/loadavg)
   awk -v l="$l1" -v m="$max_load" 'BEGIN{exit !(l < m)}' && return 0
   echo "loadavg $l1 >= $max_load: станция занята, $1 не начат" >&2
-  echo "повторите с BENCH_PAIR_STAGE=measure, сборки переиспользуются" >&2
+  echo "$2" >&2
   exit 3
 }
 
@@ -101,7 +101,9 @@ else
   dirty=""
 fi
 
-check_load "этап"
+# Сборкам тишина не нужна: проверка до сборок только у полного прогона,
+# чтобы не собирать впустую.
+[[ $stage != all ]] || check_load "прогон" "соберите заранее с BENCH_PAIR_STAGE=build, замер — с BENCH_PAIR_STAGE=measure"
 if [[ -d $base_tree && $(git -C "$base_tree" rev-parse HEAD 2>/dev/null) == "$base_full" ]]; then
   log "этап 1 из 3: worktree базы $base_ref ($base_sha) переиспользован: $base_tree"
 else
@@ -149,7 +151,7 @@ if [[ $stage == build ]]; then
   log "сборки готовы, замер: BENCH_PAIR_STAGE=measure"
   exit 0
 fi
-check_load "замер"
+check_load "замер" "повторите с BENCH_PAIR_STAGE=measure, сборки переиспользуются"
 
 args=(render_scale_profile --ignored --nocapture --test-threads=1)
 i=0
