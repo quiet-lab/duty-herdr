@@ -1248,8 +1248,7 @@ impl ClientShellState {
 
     pub(super) fn reset_endpoint_projection(&mut self) {
         self.hits = ShellHitMap::default();
-        self.pane_surface = None;
-        self.pending_pane_surface = None;
+        self.clear_pane_surfaces();
         self.input_leases = ClientInputLeases::default();
         self.popup_terminal_id = None;
         self.chrome_drag = None;
@@ -1933,9 +1932,16 @@ impl ClientShellState {
             )
     }
 
-    pub(crate) fn invalidate_pane_surface(&mut self) {
+    /// Drops the visible and the pending pane surface together with the cells kept
+    /// for reuse, so no frame outlives its surface.
+    pub(super) fn clear_pane_surfaces(&mut self) {
         self.pane_surface = None;
         self.pending_pane_surface = None;
+        self.recycled_cells = Vec::new();
+    }
+
+    pub(crate) fn invalidate_pane_surface(&mut self) {
+        self.clear_pane_surfaces();
         self.hits = ShellHitMap::default();
         self.host_mouse_pixels = None;
     }

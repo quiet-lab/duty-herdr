@@ -181,3 +181,23 @@ fn composition_after_surface_replacement_matches_fresh_state() {
 
     assert_eq!(frame.frame, expected.frame);
 }
+
+#[test]
+fn recycled_cells_are_released_with_the_surface_and_after_use() {
+    let now = std::time::Instant::now();
+    let mut next_surface = surface();
+    next_surface.surface_revision = 2;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_pane_surface(next_surface.clone());
+    assert!(!state.recycled_cells.is_empty());
+    state.invalidate_pane_surface();
+    assert_eq!(state.recycled_cells.capacity(), 0);
+
+    state.set_pane_surface(surface());
+    state.set_pane_surface(next_surface);
+    assert!(!state.recycled_cells.is_empty());
+    state.compose_at(80, 16, now).expect("frame");
+    assert_eq!(state.recycled_cells.capacity(), 0);
+}

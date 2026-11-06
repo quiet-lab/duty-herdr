@@ -242,8 +242,7 @@ impl ClientShellState {
         let agent_scroll = self.agent_scroll;
         if switching_endpoint {
             self.active_endpoint_id = endpoint_id.clone();
-            self.pane_surface = None;
-            self.pending_pane_surface = None;
+            self.clear_pane_surfaces();
         }
         self.apply_active_snapshot(snapshot, generation);
         if switching_endpoint {
