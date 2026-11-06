@@ -1754,8 +1754,7 @@ mod tests {
 
     #[test]
     fn place_label_outside_git_is_home_marker_or_directory_name() {
-        let home = std::env::var("HOME").expect("HOME is set");
-        let home = std::path::Path::new(&home);
+        let home = crate::worktree::home_dir().expect("home directory is known");
         let mut ws = Workspace::test_new("place");
         ws.cached_git_space = None;
         ws.cached_identity_cwd = home.to_path_buf();

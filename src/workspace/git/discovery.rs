@@ -27,18 +27,18 @@ pub fn derive_label_from_cwd(cwd: &Path) -> String {
         .unwrap_or_else(|| fallback_label_from_cwd(cwd))
 }
 
+/// Name of `cwd` for labels, never a path: `~` for the home directory, the
+/// last component otherwise, the full path only for a root without a name.
+/// The place label of tabs outside the cached checkout goes through here on
+/// every snapshot, so the home directory is the cached one.
 pub fn fallback_label_from_cwd(cwd: &Path) -> String {
-    if let Ok(home) = std::env::var("HOME") {
-        let home = Path::new(&home);
-        if cwd == home {
-            return "~".to_string();
-        }
+    if crate::worktree::home_dir() == Some(cwd) {
+        return "~".to_string();
     }
 
     cwd.file_name()
-        .and_then(|n| n.to_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
