@@ -1179,6 +1179,12 @@
           "description": "Cursor shape rules keyed by strict canonical agent id and matched against the agent's detection screen. Each table holds an optional default shape and ordered rules { contains, shape, bottom_non_empty_lines }; the first rule whose substring is found wins. Without a match and without a default the pane keeps its own cursor shape. Shapes: block, steady_block, underline, steady_underline, bar, steady_bar."
         },
         {
+          "key": "ui.workspace_symbols",
+          "type": "table",
+          "default": "{}",
+          "description": "Symbols and colors assigned to workspaces by directory. dirs is an array of tables [[ui.workspace_symbols.dirs]] with path (required, absolute or starting with ~), main (symbol of a root workspace), tasks (array of symbols for child workspaces, default empty) and colors (array of #rrggbb colors for child workspaces, default empty). outside is an optional table [ui.workspace_symbols.outside] with main, tasks and colors for directories matching no dirs entry. A symbol follows the ui.status_icons rule: one or two cells wide without U+FE0F; an invalid value rejects the whole [ui] section. The workspace directory is the git root of the first tab's root pane, or its cwd outside git; the entry with the longest path prefix (by path components) wins, the first among equals. A root workspace gets main as the symbol metadata token. A child workspace (created with --parent or moved with set-parent) gets the first symbol of tasks of its parent's entry not used by an open workspace and the first free color of colors (the least used one when all are taken); the pair is kept in the session snapshot. Tokens reported by an external source with report-metadata take precedence over these values for each key."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",
@@ -1206,7 +1212,7 @@
           "key": "ui.sidebar.spaces.rows",
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"workspace\"], [\"branch\", \"git_status\"]]",
-          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. At most 16 rows and 16 tokens per row."
+          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. Besides state_icon, state_text, workspace, branch and git_status, the tokens symbol (workspace symbol), place (repository name, or the path with ~ outside git), app (agent of the first tab while detected, otherwise the foreground process of its focused pane) and auto_label (symbol, place and app joined as \"<symbol> <place> · <app>\" without missing parts) are available. workspace shows the manual label only while an agent is detected in the first tab, otherwise auto_label. When a tab other than the first is active, its row follows the workspace row with the prefix \"   └─ \". At most 16 rows and 16 tokens per row."
         },
         {
           "key": "ui.accent",
