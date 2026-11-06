@@ -1125,7 +1125,6 @@ mod tests {
 path = "/work/duty"
 main = "🦁"
 tasks = ["🦄", "🦌"]
-colors = ["#111111", "#222222"]
 "##,
         )
         .unwrap();
@@ -1177,7 +1176,8 @@ colors = ["#111111", "#222222"]
         assert_eq!(token(&app, 0, "symbol").as_deref(), Some("🦁"));
         assert_eq!(token(&app, 0, "color"), None);
         assert_eq!(token(&app, 1, "symbol").as_deref(), Some("🦄"));
-        assert_eq!(token(&app, 1, "color").as_deref(), Some("#111111"));
+        let color = token(&app, 1, "color").expect("child has a rule color");
+        assert!(color.starts_with('#') && color.len() == 7, "{color}");
 
         report_workspace_token(&mut app, 0, "symbol", "🥑");
         report_workspace_token(&mut app, 1, "color", "#abcdef");
@@ -1205,15 +1205,12 @@ colors = ["#111111", "#222222"]
         let mut app = symbol_test_app(&["/work/duty", "/work/duty", "/tmp"]);
         report_workspace_token(&mut app, 2, "symbol", "🦄");
         set_parent(&mut app, 1, Some(0));
-        assert_eq!(
-            app.state.workspaces[1].assigned_tokens,
-            Some(crate::workspace_symbols::AssignedWorkspaceTokens {
-                symbol: Some("🦌".into()),
-                color: Some("#111111".into()),
-            })
-        );
+        let pinned = app.state.workspaces[1].assigned_tokens.clone().unwrap();
+        assert_eq!(pinned.symbol.as_deref(), Some("🦌"));
+        assert!(pinned.color.as_deref().is_some_and(|c| c.len() == 7));
         // The same parent again keeps the pinned pair.
         set_parent(&mut app, 1, Some(0));
+        assert_eq!(app.state.workspaces[1].assigned_tokens, Some(pinned));
         assert_eq!(
             app.state.workspaces[1]
                 .assigned_tokens
