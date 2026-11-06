@@ -140,6 +140,8 @@ pub struct TerminalState {
     reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
     reported_resume_revision: u64,
     pub terminal_title: Option<String>,
+    /// Name of the foreground process; a runtime fact, never persisted.
+    pub foreground_process: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
@@ -180,6 +182,7 @@ impl TerminalState {
             reported_resume: None,
             reported_resume_revision: 0,
             terminal_title: None,
+            foreground_process: None,
             manual_label: None,
             agent_name: None,
             agent_name_owner: None,
@@ -283,6 +286,17 @@ impl TerminalState {
             raw_changed: true,
             stripped_changed,
         }
+    }
+
+    /// Stores the foreground process name; returns whether the value changed.
+    /// A change bumps the revision so API consumers see the pane as updated.
+    pub(crate) fn set_foreground_process(&mut self, name: Option<String>) -> bool {
+        if self.foreground_process == name {
+            return false;
+        }
+        self.foreground_process = name;
+        self.revision = self.revision.wrapping_add(1);
+        true
     }
 
     pub fn with_launch_argv(mut self, argv: Vec<String>) -> Self {

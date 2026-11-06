@@ -799,6 +799,13 @@
                 "null"
               ]
             },
+            "foreground_process": {
+              "description": "Name of the process leading the pane's foreground job (the pane shell\nwhen it is in front). Absent until the first process probe.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -7999,6 +8006,13 @@
               "type": "boolean"
             },
             "foreground_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "foreground_process": {
+              "description": "Name of the process leading the pane's foreground job (the pane shell\nwhen it is in front). Absent until the first process probe.",
               "type": [
                 "string",
                 "null"

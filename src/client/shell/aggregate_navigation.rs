@@ -10,6 +10,7 @@ pub(super) struct CachedEndpointSnapshot<'a> {
     pub(super) label: &'a str,
     pub(super) status: ClientEndpointStatus,
     pub(super) snapshot: &'a ClientShellSnapshot,
+    pub(super) labels: &'a super::labels::SnapshotLabels,
     pub(super) agent_recency: &'a HashMap<String, u64>,
     pub(super) agent_presentation: &'a super::endpoint_agent_state::EndpointAgentPresentation,
 }
@@ -36,6 +37,7 @@ pub(super) fn cached_endpoint_snapshots(
                     label: &endpoint.label,
                     status: endpoint.status,
                     snapshot,
+                    labels: &endpoint.labels,
                     agent_recency: &endpoint.agent_recency,
                     agent_presentation: &endpoint.agent_presentation,
                 })
@@ -314,12 +316,13 @@ pub(super) fn navigator_rows(
             // Build endpoint-local indexes once. Walk each bucket in snapshot
             // order so interleaved input and overlapping IDs on other endpoints
             // retain their existing navigation order and targets.
+            let labeled = super::labels::LabeledSnapshot::new(snapshot, Some(&endpoint.labels));
             let mut tabs_by_workspace = HashMap::new();
-            for tab in &snapshot.tabs {
+            for (tab_index, tab) in snapshot.tabs.iter().enumerate() {
                 tabs_by_workspace
                     .entry(tab.workspace_id.as_str())
                     .or_insert_with(Vec::new)
-                    .push(tab);
+                    .push((tab_index, tab));
             }
             let mut panes_by_tab = HashMap::new();
             for pane in &snapshot.panes {
@@ -328,8 +331,10 @@ pub(super) fn navigator_rows(
                     .or_insert_with(Vec::new)
                     .push(pane);
             }
-            for workspace in &snapshot.workspaces {
+            for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
+                let workspace_label = labeled.workspace_label(workspace_index, &workspace.label);
                 let workspace_matches = endpoint_query_matches
+                    || text(&workspace_label)
                     || text(&workspace.label)
                     || workspace.branch.as_deref().is_some_and(text);
                 let mut children = Vec::new();
@@ -338,8 +343,9 @@ pub(super) fn navigator_rows(
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let multiple_tabs = workspace_tabs.len() > 1;
-                for tab in workspace_tabs {
-                    let tab_matches = workspace_matches || text(&tab.label);
+                for &(tab_index, tab) in workspace_tabs {
+                    let tab_label = labeled.tab_label(tab_index);
+                    let tab_matches = workspace_matches || text(&tab_label) || text(&tab.label);
                     let tab_panes = panes_by_tab
                         .get(tab.tab_id.as_str())
                         .map(Vec::as_slice)
@@ -363,15 +369,18 @@ pub(super) fn navigator_rows(
                                 .as_deref()
                                 .or(agent.terminal_title_stripped.as_deref())
                         });
-                        let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())
-                            .then_some(tab.label.as_str());
+                        // A lone tab without a manual label repeats its workspace.
+                        let tab_name = (tab.custom_label
+                            || (multiple_tabs && super::labels::tab_has_facts(tab))
+                            || tab.label.parse::<usize>().is_err())
+                        .then_some(tab_label.as_ref());
                         let label = if tab_panes.len() == 1 {
                             match name.or(tab_name).or(title) {
                                 Some(label) => label.to_owned(),
                                 None if multiple_tabs => {
-                                    format!("{} · {}", agent_kind.unwrap_or("terminal"), tab.label)
+                                    format!("{} · {}", agent_kind.unwrap_or("terminal"), tab_label)
                                 }
-                                None => workspace.label.clone(),
+                                None => workspace_label.clone().into_owned(),
                             }
                         } else {
                             let pane_name = name.or(title).or(agent_kind).unwrap_or("terminal");
@@ -405,7 +414,7 @@ pub(super) fn navigator_rows(
                                 meta: meta.to_owned(),
                                 detail: format!(
                                     "{} / {} / {}",
-                                    workspace.label, tab.label, pane.pane_id
+                                    workspace_label, tab_label, pane.pane_id
                                 ),
                                 agent: agent_kind.map(str::to_owned),
                                 status: Some(status),
@@ -426,7 +435,7 @@ pub(super) fn navigator_rows(
                 {
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
-                        label: workspace.label.clone(),
+                        label: workspace_label.clone().into_owned(),
                         meta: workspace.branch.clone().unwrap_or_default(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,

@@ -89,6 +89,12 @@ pub enum AppEvent {
         agent: Agent,
         observed_at: Instant,
     },
+    /// The foreground process of a pane changed (name of the foreground job
+    /// leader; the pane shell when it is in front, `None` without a probe).
+    ForegroundProcessChanged {
+        pane_id: PaneId,
+        name: Option<String>,
+    },
     /// The current Codex input screen is visible during managed startup.
     CodexPromptObserved { pane_id: PaneId, ready: bool },
     /// Fallback detector state changed in a pane.

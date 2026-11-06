@@ -313,7 +313,11 @@ pub(super) fn render_shell(
         render_tab_bar(
             buffer,
             layout.tab_bar,
-            snapshot,
+            super::labels::LabeledSnapshot::of_endpoint(
+                snapshot,
+                state.endpoints,
+                state.active_endpoint_id,
+            ),
             config,
             state.tab_scroll,
             state.reveal_focused_tab,

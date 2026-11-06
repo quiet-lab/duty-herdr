@@ -15,6 +15,7 @@ mod agent_resume;
 mod agent_view_eval;
 mod api;
 mod app;
+mod auto_label;
 mod build_info;
 mod checksum;
 mod cli;
@@ -62,6 +63,7 @@ mod thread_spawn;
 mod ui;
 mod update;
 mod workspace;
+mod workspace_symbols;
 mod workspace_tree;
 mod worktree;
 

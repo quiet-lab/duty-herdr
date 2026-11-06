@@ -83,7 +83,12 @@ impl App {
             None => None,
         };
         if self.state.workspaces[index].parent_workspace_id != parent_id {
+            let parent_index = parent_id
+                .as_deref()
+                .and_then(|parent| self.parse_workspace_id(parent));
             self.state.workspaces[index].parent_workspace_id = parent_id;
+            // A new parent gives a pair of its directory; a detach shows `main`.
+            self.state.reparent_workspace_tokens(index, parent_index);
             self.state.mark_session_dirty();
             self.emit_workspace_updated(index);
         }
@@ -141,12 +146,19 @@ impl App {
         };
         match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
             Ok(index) => {
+                let parent_index = parent_workspace_id
+                    .as_deref()
+                    .and_then(|parent| self.parse_workspace_id(parent));
                 if let Some(workspace) = self.state.workspaces.get_mut(index) {
                     workspace.parent_workspace_id = parent_workspace_id;
                     if let Some(label) = params.label {
                         workspace.set_custom_name(label);
                         crate::logging::workspace_renamed(&workspace.id);
                     }
+                }
+                if let Some(parent_index) = parent_index {
+                    self.state
+                        .assign_child_workspace_tokens(index, parent_index);
                 }
                 self.emit_workspace_open_events(index);
                 encode_success(
@@ -1104,6 +1116,126 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         (app, event_hub)
+    }
+
+    fn symbol_test_app(dirs: &[&str]) -> App {
+        let config: Config = toml::from_str(
+            r##"
+[[ui.workspace_symbols.dirs]]
+path = "/work/duty"
+main = "🦁"
+tasks = ["🦄", "🦌"]
+colors = ["#111111", "#222222"]
+"##,
+        )
+        .unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = dirs
+            .iter()
+            .map(|dir| {
+                let mut ws = Workspace::test_new("ws");
+                ws.cached_identity_cwd = PathBuf::from(dir);
+                ws.cached_git_space = None;
+                ws
+            })
+            .collect();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app
+    }
+
+    fn report_workspace_token(app: &mut App, workspace: usize, key: &str, value: &str) {
+        let workspace_id = app.public_workspace_id(workspace);
+        let response = app.handle_workspace_report_metadata(
+            "req".into(),
+            WorkspaceReportMetadataParams {
+                workspace_id,
+                source: "duty".into(),
+                tokens: std::collections::HashMap::from([(key.into(), Some(value.into()))]),
+                seq: None,
+                ttl_ms: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
+    }
+
+    #[test]
+    fn workspace_info_shows_herdr_symbols_under_reported_tokens() {
+        let mut app = symbol_test_app(&["/work/duty", "/tmp"]);
+        let response = set_parent(&mut app, 1, Some(0));
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        let token =
+            |app: &App, ws: usize, key: &str| app.workspace_info(ws).tokens.get(key).cloned();
+        assert_eq!(token(&app, 0, "symbol").as_deref(), Some("🦁"));
+        assert_eq!(token(&app, 0, "color"), None);
+        assert_eq!(token(&app, 1, "symbol").as_deref(), Some("🦄"));
+        assert_eq!(token(&app, 1, "color").as_deref(), Some("#111111"));
+
+        report_workspace_token(&mut app, 0, "symbol", "🥑");
+        report_workspace_token(&mut app, 1, "color", "#abcdef");
+        assert_eq!(token(&app, 0, "symbol").as_deref(), Some("🥑"));
+        assert_eq!(token(&app, 1, "symbol").as_deref(), Some("🦄"));
+        assert_eq!(token(&app, 1, "color").as_deref(), Some("#abcdef"));
+
+        // Clearing the reported token uncovers Herdr's own one again.
+        let workspace_id = app.public_workspace_id(0);
+        app.handle_workspace_report_metadata(
+            "req".into(),
+            WorkspaceReportMetadataParams {
+                workspace_id,
+                source: "duty".into(),
+                tokens: std::collections::HashMap::from([("symbol".into(), None)]),
+                seq: None,
+                ttl_ms: None,
+            },
+        );
+        assert_eq!(token(&app, 0, "symbol").as_deref(), Some("🦁"));
+    }
+
+    #[test]
+    fn set_parent_pins_child_tokens_and_detach_restores_main() {
+        let mut app = symbol_test_app(&["/work/duty", "/work/duty", "/tmp"]);
+        report_workspace_token(&mut app, 2, "symbol", "🦄");
+        set_parent(&mut app, 1, Some(0));
+        assert_eq!(
+            app.state.workspaces[1].assigned_tokens,
+            Some(crate::workspace_symbols::AssignedWorkspaceTokens {
+                symbol: Some("🦌".into()),
+                color: Some("#111111".into()),
+            })
+        );
+        // The same parent again keeps the pinned pair.
+        set_parent(&mut app, 1, Some(0));
+        assert_eq!(
+            app.state.workspaces[1]
+                .assigned_tokens
+                .as_ref()
+                .and_then(|tokens| tokens.symbol.as_deref()),
+            Some("🦌")
+        );
+        // Another parent in a directory without a rule leaves no pair.
+        set_parent(&mut app, 1, Some(2));
+        assert_eq!(
+            app.state.workspaces[1].assigned_tokens,
+            Some(crate::workspace_symbols::AssignedWorkspaceTokens::default())
+        );
+        set_parent(&mut app, 1, None);
+        assert_eq!(app.state.workspaces[1].assigned_tokens, None);
+        assert_eq!(
+            app.workspace_info(1)
+                .tokens
+                .get("symbol")
+                .map(String::as_str),
+            Some("🦁")
+        );
     }
 
     fn set_parent(app: &mut App, workspace: usize, parent: Option<usize>) -> String {

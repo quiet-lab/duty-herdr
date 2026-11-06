@@ -219,6 +219,9 @@ pub struct Workspace {
     /// Explicit parent workspace id; one nesting level, see `crate::workspace_tree`.
     pub parent_workspace_id: Option<String>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
+    /// `symbol`/`color` pinned when the workspace became a child; see
+    /// `crate::workspace_symbols`. `None` for a root, which derives `main`.
+    pub(crate) assigned_tokens: Option<crate::workspace_symbols::AssignedWorkspaceTokens>,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
     pub public_pane_numbers: HashMap<PaneId, usize>,
@@ -286,6 +289,7 @@ impl Workspace {
             worktree_space: None,
             parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            assigned_tokens: None,
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -439,6 +443,7 @@ impl Workspace {
                 worktree_space: None,
                 parent_workspace_id: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+                assigned_tokens: None,
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
                 next_public_pane_number: 2,
@@ -1094,6 +1099,73 @@ impl Workspace {
         }
     }
 
+    /// Place of the workspace: repository name of the cached Git checkout of the
+    /// first tab's root pane, or its cwd with `~` outside Git. Reads only the
+    /// cached Git identity, never the filesystem.
+    pub(crate) fn place_label(&self) -> String {
+        match &self.cached_git_space {
+            Some(space) => {
+                self::git::automatic_workspace_label(&self.cached_identity_cwd, &space.repo_root)
+            }
+            None => self::git::tilde_path(&self.cached_identity_cwd),
+        }
+    }
+
+    /// Place of another tab's root pane at `cwd`: the workspace repository name
+    /// while `cwd` lies inside the cached checkout, otherwise `cwd` with `~`.
+    /// Per-tab Git discovery would read the filesystem, so a tab in another
+    /// repository shows its path.
+    pub(crate) fn place_label_for(&self, cwd: &std::path::Path) -> String {
+        match &self.cached_git_space {
+            Some(space) if cwd.starts_with(&space.repo_root) => {
+                self::git::automatic_workspace_label(cwd, &space.repo_root)
+            }
+            _ => self::git::tilde_path(cwd),
+        }
+    }
+
+    /// Facts of the automatic label of tab `tab_index`; the single rule
+    /// behind the outer window title and the client snapshot. The agent is
+    /// the one of the focused pane, otherwise of the first other agent pane in
+    /// layout order: its reported `display_agent`, otherwise its effective
+    /// agent label. The place is [`Self::place_label`] for the first tab and
+    /// the root pane's admitted cwd for later tabs. The foreground process is
+    /// the focused pane's. Reads only cached state of this one tab.
+    pub(crate) fn tab_label_facts<'a>(
+        &'a self,
+        tab_index: usize,
+        terminals: &'a HashMap<TerminalId, TerminalState>,
+    ) -> Option<TabLabelFacts<'a>> {
+        let tab = self.tabs.get(tab_index)?;
+        let terminal_of = |pane_id| {
+            tab.terminal_id(pane_id)
+                .and_then(|terminal_id| terminals.get(terminal_id))
+        };
+        let focused = tab.layout.focused();
+        let focused_terminal = terminal_of(focused);
+        let agent = focused_terminal.and_then(tab_agent_label).or_else(|| {
+            if tab.layout.pane_count() < 2 {
+                return None;
+            }
+            tab.layout
+                .pane_ids()
+                .into_iter()
+                .filter(|pane_id| *pane_id != focused)
+                .find_map(|pane_id| terminal_of(pane_id).and_then(tab_agent_label))
+        });
+        let place = if tab_index == 0 {
+            Some(self.place_label())
+        } else {
+            terminal_of(tab.root_pane).map(|terminal| self.place_label_for(&terminal.cwd))
+        };
+        Some(TabLabelFacts {
+            place,
+            agent,
+            foreground_process: focused_terminal
+                .and_then(|terminal| terminal.foreground_process.as_deref()),
+        })
+    }
+
     pub fn branch(&self) -> Option<String> {
         self.cached_git_branch.clone()
     }
@@ -1241,6 +1313,7 @@ impl Workspace {
             worktree_space: None,
             parent_workspace_id: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            assigned_tokens: None,
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -1463,6 +1536,27 @@ impl Workspace {
     }
 }
 
+/// Facts of a tab's automatic label, see [`Workspace::tab_label_facts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TabLabelFacts<'a> {
+    pub(crate) place: Option<String>,
+    /// Detected agent of the tab; `Some` exactly while an agent is alive.
+    pub(crate) agent: Option<String>,
+    pub(crate) foreground_process: Option<&'a str>,
+}
+
+/// Agent label of an agent terminal: its reported `display_agent`, otherwise
+/// its effective agent label; `None` for a plain terminal.
+fn tab_agent_label(terminal: &TerminalState) -> Option<String> {
+    if !terminal.is_agent_terminal() {
+        return None;
+    }
+    terminal
+        .effective_display_agent()
+        .or_else(|| terminal.effective_agent_label().map(str::to_owned))
+        .filter(|label| !label.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1618,6 +1712,36 @@ mod tests {
         assert_eq!(auto_label, checkout.file_name().unwrap().to_str().unwrap());
 
         std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn place_label_uses_cached_git_root_name_or_path_outside_git() {
+        let mut ws = Workspace::test_new("place");
+        ws.cached_identity_cwd = PathBuf::from("/srv/plain/dir");
+        ws.cached_git_space = None;
+        assert_eq!(ws.place_label(), "/srv/plain/dir");
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/other")),
+            "/srv/other"
+        );
+
+        ws.cached_identity_cwd = PathBuf::from("/srv/code/herdr/src/ui");
+        ws.cached_git_space = Some(GitSpaceMetadata {
+            key: "/srv/code/herdr/.git".into(),
+            checkout_key: "/srv/code/herdr".into(),
+            repo_name: "herdr".into(),
+            repo_root: PathBuf::from("/srv/code/herdr"),
+            is_linked_worktree: false,
+        });
+        assert_eq!(ws.place_label(), "herdr");
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/code/herdr/docs")),
+            "herdr"
+        );
+        assert_eq!(
+            ws.place_label_for(std::path::Path::new("/srv/other")),
+            "/srv/other"
+        );
     }
 
     #[test]

@@ -1364,7 +1364,9 @@ impl AppState {
                 continue;
             }
 
+            let rules = &self.workspace_symbols;
             let ws = &mut self.workspaces[ws_idx];
+            let symbol_before = ws.herdr_tokens(rules).0.map(str::to_owned);
             if ws.cached_identity_cwd != result.resolved_identity_cwd {
                 ws.cached_identity_cwd = result.resolved_identity_cwd;
             }
@@ -1387,6 +1389,8 @@ impl AppState {
                 ws.cached_git_space = result.space;
                 changed = true;
             }
+            // A root's `main` symbol follows the admitted directory.
+            changed |= ws.herdr_tokens(rules).0 != symbol_before.as_deref();
         }
         changed
     }
@@ -1623,6 +1627,18 @@ impl AppState {
             // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
             AppEvent::TerminalBell { .. } => Vec::new(),
             AppEvent::ClipboardWrite { .. } => Vec::new(),
+            AppEvent::ForegroundProcessChanged { pane_id, name } => {
+                let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
+                    ws.pane_state(pane_id)
+                        .map(|pane| pane.attached_terminal_id.clone())
+                }) else {
+                    return Vec::new();
+                };
+                if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
+                    terminal.set_foreground_process(name);
+                }
+                Vec::new()
+            }
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 if !cwd.is_absolute() || !cwd.is_dir() {
                     return Vec::new();
@@ -4199,6 +4215,37 @@ mod tests {
         assert_eq!(state.terminals.get(&terminal_id).unwrap().cwd, cwd);
         assert!(state.session_dirty);
         let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn foreground_process_event_updates_terminal_and_bumps_revision_only_on_change() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let revision = state.terminals.get(&terminal_id).unwrap().revision;
+
+        let updates = state.handle_app_event(AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("bash".into()),
+        });
+        assert!(updates.is_empty());
+        let terminal = state.terminals.get(&terminal_id).unwrap();
+        assert_eq!(terminal.foreground_process.as_deref(), Some("bash"));
+        let changed_revision = terminal.revision;
+        assert_ne!(changed_revision, revision);
+
+        state.handle_app_event(AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("bash".into()),
+        });
+        assert_eq!(
+            state.terminals.get(&terminal_id).unwrap().revision,
+            changed_revision
+        );
     }
 
     #[test]

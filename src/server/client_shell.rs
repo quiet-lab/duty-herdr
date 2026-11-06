@@ -102,13 +102,15 @@ pub(super) fn snapshot_with_completions(
     let tabs = snapshot
         .tabs
         .into_iter()
-        .zip(
-            app.state
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.tabs.iter()),
-        )
-        .map(|(tab, state)| {
+        .zip(app.state.workspaces.iter().flat_map(|workspace| {
+            (0..workspace.tabs.len()).map(move |tab_index| (workspace, tab_index))
+        }))
+        .map(|(tab, (workspace, tab_index))| {
+            let state = &workspace.tabs[tab_index];
+            // Label facts of this tab; same rule as the outer window title.
+            let facts = workspace
+                .tab_label_facts(tab_index, &app.state.terminals)
+                .unwrap_or_default();
             let tab_id = tab.tab_id;
             protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
@@ -119,6 +121,9 @@ pub(super) fn snapshot_with_completions(
                 custom_label: !state.is_auto_named(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
+                place: facts.place,
+                agent_label: facts.agent,
+                foreground_process: facts.foreground_process.map(str::to_owned),
             }
         })
         .collect();
@@ -146,6 +151,7 @@ pub(super) fn snapshot_with_completions(
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
+                foreground_process: pane.foreground_process,
             }
         })
         .collect();
@@ -631,6 +637,147 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_and_pane_info_carry_foreground_process() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("active")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let pane_id = *app.state.workspaces[0].panes.keys().next().unwrap();
+
+        let (shell, _) = snapshot_with_completions(&app, "boot", 1, None, None);
+        assert_eq!(shell.panes[0].foreground_process, None);
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("nvim".into()),
+        });
+        let (shell, _) = snapshot_with_completions(&app, "boot", 2, None, None);
+        assert_eq!(shell.panes[0].foreground_process.as_deref(), Some("nvim"));
+        let info = app.session_metadata_snapshot();
+        assert_eq!(info.panes[0].foreground_process.as_deref(), Some("nvim"));
+        let json = serde_json::to_value(&info.panes[0]).unwrap();
+        assert_eq!(json["foreground_process"], "nvim");
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: None,
+        });
+        let info = app.session_metadata_snapshot();
+        assert_eq!(info.panes[0].foreground_process, None);
+        let json = serde_json::to_value(&info.panes[0]).unwrap();
+        assert!(json.get("foreground_process").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_tabs_carry_place_and_agent_label_facts() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("place");
+        workspace.test_add_tab(None);
+        workspace.cached_identity_cwd = std::path::PathBuf::from("/srv/code/herdr/src");
+        workspace.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "/srv/code/herdr/.git".into(),
+            checkout_key: "/srv/code/herdr".into(),
+            repo_name: "herdr".into(),
+            repo_root: std::path::PathBuf::from("/srv/code/herdr"),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let first_tab = &app.state.workspaces[0].tabs[0];
+        let terminal_id = first_tab
+            .terminal_id(first_tab.root_pane)
+            .expect("root terminal")
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal")
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Working,
+            );
+
+        let shell = snapshot(&app, "boot", 1, None, None);
+        assert_eq!(shell.tabs.len(), 2);
+        assert_eq!(shell.tabs[0].place.as_deref(), Some("herdr"));
+        assert!(shell.tabs[0].agent_label.is_some());
+        assert_eq!(shell.tabs[1].agent_label, None);
+        let second_root = shell
+            .panes
+            .iter()
+            .find(|pane| pane.tab_id == shell.tabs[1].tab_id)
+            .and_then(|pane| pane.cwd.clone())
+            .expect("second tab root cwd");
+        assert_eq!(
+            shell.tabs[1].place,
+            Some(app.state.workspaces[0].place_label_for(std::path::Path::new(&second_root)))
+        );
+        assert!(shell
+            .tabs
+            .iter()
+            .all(|tab| tab.foreground_process.is_none()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_tab_agent_and_window_title_share_the_focused_pane_rule() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("agents");
+        let root = workspace.tabs[0].root_pane;
+        let split = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        for (pane, agent) in [
+            (root, crate::detect::Agent::Pi),
+            (split, crate::detect::Agent::Claude),
+        ] {
+            let terminal_id = app.state.workspaces[0].tabs[0]
+                .terminal_id(pane)
+                .expect("terminal")
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("terminal")
+                .set_detected_state(Some(agent), crate::detect::AgentState::Idle);
+        }
+        for focused in [split, root] {
+            app.state.workspaces[0].tabs[0].layout.focus_pane(focused);
+            let expected = if focused == root {
+                crate::detect::agent_label(crate::detect::Agent::Pi)
+            } else {
+                crate::detect::agent_label(crate::detect::Agent::Claude)
+            };
+            let shell = snapshot(&app, "boot", 1, None, None);
+            assert_eq!(shell.tabs[0].agent_label.as_deref(), Some(expected));
+            let title = app.tab_title_label(0, 0).expect("tab title");
+            assert!(title.ends_with(&format!(" · {expected}")), "{title}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn snapshot_metadata_skips_scroll_reads_and_preserves_public_session_data() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(
@@ -779,6 +926,53 @@ mod tests {
         app.state.integration_recommendations[0].state =
             crate::integration::IntegrationStatusKind::Outdated;
         assert!(snapshot(&app, "boot", 2, None, None).integration_updates_available);
+    }
+
+    #[test]
+    fn snapshot_tokens_prefer_reported_workspace_tokens_over_herdr_symbols() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.workspace_symbols.outside]
+main = "🏠"
+tasks = ["🦄"]
+colors = ["#111111"]
+"##,
+        )
+        .unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![
+            crate::workspace::Workspace::test_new("root"),
+            crate::workspace::Workspace::test_new("child"),
+        ];
+        app.state.active = Some(0);
+        let parent_id = app.state.workspaces[0].id.clone();
+        app.state.workspaces[1].parent_workspace_id = Some(parent_id);
+        app.state.assign_child_workspace_tokens(1, 0);
+        app.state.workspaces[1].metadata_tokens.patch(
+            std::collections::HashMap::from([("symbol".into(), Some("🥑".into()))]),
+            None,
+            std::time::Instant::now(),
+        );
+
+        let shell = snapshot(&app, "boot", 1, None, None);
+        let token = |ws: usize, key: &str| {
+            shell.workspaces[ws]
+                .tokens
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(token(0, "symbol"), Some("🏠"));
+        assert_eq!(token(0, "color"), None);
+        assert_eq!(token(1, "symbol"), Some("🥑"));
+        assert_eq!(token(1, "color"), Some("#111111"));
     }
 
     #[test]

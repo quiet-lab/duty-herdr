@@ -65,8 +65,6 @@ impl App {
 
     fn window_title_for_target(&self, target: Option<(usize, usize)>) -> Option<String> {
         let (template, hostname) = self.window_title_template.as_ref()?;
-        let workspace =
-            target.and_then(|(workspace_index, _)| self.state.workspaces.get(workspace_index));
         let tab = target.and_then(|(workspace_index, tab_index)| {
             self.state
                 .workspaces
@@ -84,18 +82,15 @@ impl App {
                 WindowTitlePart::Literal(literal) => title.push_str(literal),
                 WindowTitlePart::Token(WindowTitleToken::Hostname) => title.push_str(hostname),
                 WindowTitlePart::Token(WindowTitleToken::Workspace) => {
-                    if let Some(workspace) = workspace {
-                        title.push_str(
-                            &workspace.display_name_from_terminals(&self.state.terminals),
-                        );
+                    if let Some(name) = target.and_then(|(workspace_index, _)| {
+                        self.workspace_title_label(workspace_index)
+                    }) {
+                        title.push_str(&name);
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Tab) => {
                     if let Some(name) = target.and_then(|(workspace_index, tab_index)| {
-                        self.state
-                            .workspaces
-                            .get(workspace_index)?
-                            .tab_display_name(tab_index)
+                        self.tab_title_label(workspace_index, tab_index)
                     }) {
                         title.push_str(&name);
                     }
@@ -118,6 +113,64 @@ impl App {
         }
 
         Some(title)
+    }
+
+    /// Workspace label by the shared rule of `crate::auto_label`, as in the
+    /// spaces panel: the manual workspace label while an agent is detected in
+    /// the first tab, otherwise `<symbol> <place> · <app>` of the first tab.
+    /// Reads cached state of the first tab only, like `tab_title_label`.
+    pub(crate) fn workspace_title_label(&self, workspace_index: usize) -> Option<String> {
+        let workspace = self.state.workspaces.get(workspace_index)?;
+        let fallback = workspace.display_name_from_terminals(&self.state.terminals);
+        let Some(facts) = workspace.tab_label_facts(0, &self.state.terminals) else {
+            return Some(fallback);
+        };
+        let symbol = workspace.effective_symbol(&self.state.workspace_symbols);
+        let label_facts = crate::auto_label::LabelFacts::new(
+            symbol.as_deref(),
+            facts.place.as_deref(),
+            facts.agent.as_deref(),
+            facts.foreground_process,
+        );
+        Some(
+            crate::auto_label::display_label(
+                workspace.custom_name.as_deref(),
+                facts.agent.is_some(),
+                label_facts.auto_label().map(std::borrow::Cow::Owned),
+                &fallback,
+            )
+            .into_owned(),
+        )
+    }
+
+    /// Tab label by the shared rule of `crate::auto_label`: the manual tab
+    /// label while an agent is detected in the tab, otherwise
+    /// `<symbol> <place> · <app>`, from [`crate::workspace::Workspace::tab_label_facts`].
+    pub(crate) fn tab_title_label(
+        &self,
+        workspace_index: usize,
+        tab_index: usize,
+    ) -> Option<String> {
+        let workspace = self.state.workspaces.get(workspace_index)?;
+        let tab = workspace.tabs.get(tab_index)?;
+        let fallback = workspace.tab_display_name(tab_index)?;
+        let facts = workspace.tab_label_facts(tab_index, &self.state.terminals)?;
+        let symbol = workspace.effective_symbol(&self.state.workspace_symbols);
+        let label_facts = crate::auto_label::LabelFacts::new(
+            symbol.as_deref(),
+            facts.place.as_deref(),
+            facts.agent.as_deref(),
+            facts.foreground_process,
+        );
+        Some(
+            crate::auto_label::display_label(
+                tab.custom_name.as_deref(),
+                facts.agent.is_some(),
+                label_facts.auto_label().map(std::borrow::Cow::Owned),
+                &fallback,
+            )
+            .into_owned(),
+        )
     }
 }
 
@@ -143,15 +196,92 @@ mod tests {
         app
     }
 
+    fn root_terminal(app: &mut App, tab: usize) -> &mut crate::terminal::TerminalState {
+        let tab = &app.state.workspaces[0].tabs[tab];
+        let terminal_id = tab.terminal_id(tab.root_pane).unwrap().clone();
+        app.state.terminals.get_mut(&terminal_id).unwrap()
+    }
+
     #[test]
     fn renders_workspace_and_tab_names() {
         let mut app = test_app();
         app.configure_window_title("{workspace}/{tab}");
+        app.state.workspaces[0].cached_identity_cwd = "/srv/herd".into();
+        app.state.workspaces[0].cached_git_space = None;
 
-        assert_eq!(app.window_title().as_deref(), Some("herd/1"));
+        // Without an agent the manual workspace and tab labels are hidden:
+        // both show the place and the foreground process.
+        assert_eq!(app.window_title().as_deref(), Some("/srv/herd//srv/herd"));
+        root_terminal(&mut app, 0).set_foreground_process(Some("nvim".into()));
+        assert_eq!(
+            app.window_title().as_deref(),
+            Some("/srv/herd · nvim//srv/herd · nvim")
+        );
 
+        // The manual labels show only while an agent is detected in the tab.
         app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
+        assert_eq!(
+            app.window_title().as_deref(),
+            Some("/srv/herd · nvim//srv/herd · nvim")
+        );
+        root_terminal(&mut app, 0).set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Working,
+        );
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));
+        app.state.workspaces[0].tabs[0].custom_name = None;
+        let title = app.window_title().unwrap();
+        assert!(title.starts_with("herd//srv/herd · "), "{title}");
+        assert!(!title.ends_with("nvim"), "{title}");
+
+        // Without a manual workspace label the agent names the workspace.
+        app.state.workspaces[0].custom_name = None;
+        let title = app.window_title().unwrap();
+        assert!(title.starts_with("/srv/herd · "), "{title}");
+        assert!(!title.contains("nvim"), "{title}");
+    }
+
+    #[test]
+    fn later_tab_title_uses_its_root_pane_place_and_workspace_symbol() {
+        let config: Config = toml::from_str(
+            r#"
+[ui.workspace_symbols.outside]
+main = "S"
+"#,
+        )
+        .unwrap();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = Workspace::test_new("herd");
+        workspace.test_add_tab(None);
+        workspace.cached_identity_cwd = "/srv/herd".into();
+        workspace.cached_git_space = None;
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.configure_window_title("{tab}");
+        root_terminal(&mut app, 1).cwd = "/srv/notes".into();
+        root_terminal(&mut app, 1).set_foreground_process(Some("htop".into()));
+
+        assert_eq!(app.window_title_for(0, 0).as_deref(), Some("S /srv/herd"));
+        assert_eq!(
+            app.window_title_for(0, 1).as_deref(),
+            Some("S /srv/notes · htop")
+        );
+
+        // The workspace token always names the first tab, whichever is active.
+        app.configure_window_title("{workspace}|{tab}");
+        root_terminal(&mut app, 0).set_foreground_process(Some("nvim".into()));
+        assert_eq!(
+            app.window_title_for(0, 1).as_deref(),
+            Some("S /srv/herd · nvim|S /srv/notes · htop")
+        );
     }
 
     #[test]

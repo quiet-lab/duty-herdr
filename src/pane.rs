@@ -804,6 +804,49 @@ struct ProcessProbeResult {
     /// The process that identified as `agent`, which need not lead its job.
     agent_pid: Option<u32>,
     process_name: Option<String>,
+    /// Name of the foreground job leader (the pane shell when the shell is in front).
+    foreground_name: Option<String>,
+}
+
+/// Name of the process leading a foreground job: the member whose pid is the
+/// process group id, otherwise the first member.
+fn foreground_job_leader_name(job: &crate::platform::ForegroundJob) -> Option<String> {
+    job.processes
+        .iter()
+        .find(|process| process.pid == job.process_group_id)
+        .or_else(|| job.processes.first())
+        .map(|process| process.name.clone())
+        .filter(|name| !name.is_empty())
+}
+
+/// Returns the value to publish when the observed foreground process differs
+/// from the last published one, and records it as published.
+fn foreground_process_change(
+    last_published: &mut Option<String>,
+    observed: Option<String>,
+) -> Option<Option<String>> {
+    if *last_published == observed {
+        return None;
+    }
+    *last_published = observed.clone();
+    Some(observed)
+}
+
+async fn publish_foreground_process_changed(
+    state_events: &mpsc::Sender<AppEvent>,
+    pane_id: PaneId,
+    name: Option<String>,
+) {
+    if let Err(e) = state_events
+        .send(AppEvent::ForegroundProcessChanged { pane_id, name })
+        .await
+    {
+        warn!(
+            pane = pane_id.raw(),
+            err = %e,
+            "failed to deliver ForegroundProcessChanged event"
+        );
+    }
 }
 
 fn agent_hint_for_foreground_job_members(
@@ -850,6 +893,7 @@ fn process_probe_result(
         agent: Some(agent),
         agent_pid: Some(agent_pid),
         process_name: Some(process_name),
+        foreground_name: foreground_job_leader_name(job),
     }
 }
 
@@ -905,6 +949,7 @@ fn probe_foreground_process_from_jobs(
             agent: None,
             agent_pid: None,
             process_name: None,
+            foreground_name: foreground_job_leader_name(job),
         };
     }
 
@@ -914,6 +959,7 @@ fn probe_foreground_process_from_jobs(
         agent: None,
         agent_pid: None,
         process_name: None,
+        foreground_name: None,
     }
 }
 
@@ -971,6 +1017,7 @@ fn spawn_basic_detection_task(
         let mut last_codex_prompt_ready = false;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
+        let mut published_foreground_process: Option<String> = None;
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -1059,6 +1106,12 @@ fn spawn_basic_detection_task(
                 let had_process_probe = has_process_probe;
                 has_process_probe = true;
                 let probe = probe_foreground_process(pid, foreground_pgid);
+                if let Some(name) = foreground_process_change(
+                    &mut published_foreground_process,
+                    probe.foreground_name.clone(),
+                ) {
+                    publish_foreground_process_changed(&state_events, pane_id, name).await;
+                }
                 let process_group_id = probe.process_group_id;
                 let tracked_process_group_id =
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
@@ -2990,6 +3043,7 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
+                let mut published_foreground_process: Option<String> = None;
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -3116,6 +3170,13 @@ impl PaneRuntime {
                         has_process_probe = true;
                         if pid > 0 {
                             let probe = probe_foreground_process(pid, foreground_pgid);
+                            if let Some(name) = foreground_process_change(
+                                &mut published_foreground_process,
+                                probe.foreground_name.clone(),
+                            ) {
+                                publish_foreground_process_changed(&state_events, pane_id, name)
+                                    .await;
+                            }
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(
@@ -6069,6 +6130,67 @@ mod tests {
             argv: None,
             cmdline: None,
         }
+    }
+
+    #[test]
+    fn probe_reports_foreground_leader_name_without_agent() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 50,
+            processes: vec![
+                foreground_process(51, "helper"),
+                foreground_process(50, "nvim"),
+            ],
+        };
+        let result = probe_foreground_process_from_jobs(42, Some(50), None, || Some(job), |_| None);
+        assert_eq!(result.foreground_name.as_deref(), Some("nvim"));
+    }
+
+    #[test]
+    fn probe_reports_pane_shell_name_when_shell_is_in_front() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 42,
+            processes: vec![foreground_process(42, "zsh")],
+        };
+        let result = probe_foreground_process_from_jobs(42, Some(42), None, || Some(job), |_| None);
+        assert_eq!(result.foreground_name.as_deref(), Some("zsh"));
+        assert!(result.foreground_is_pane_shell);
+    }
+
+    #[test]
+    fn probe_without_job_reports_no_foreground_name() {
+        let result = probe_foreground_process_from_jobs(42, Some(50), None, || None, |_| None);
+        assert_eq!(result.foreground_name, None);
+    }
+
+    #[test]
+    fn foreground_leader_name_falls_back_to_first_member() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 7,
+            processes: vec![
+                foreground_process(8, "worker"),
+                foreground_process(9, "other"),
+            ],
+        };
+        assert_eq!(foreground_job_leader_name(&job).as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn foreground_process_change_publishes_only_on_change() {
+        let mut published = None;
+        assert_eq!(foreground_process_change(&mut published, None), None);
+        assert_eq!(
+            foreground_process_change(&mut published, Some("bash".into())),
+            Some(Some("bash".into()))
+        );
+        assert_eq!(
+            foreground_process_change(&mut published, Some("bash".into())),
+            None
+        );
+        assert_eq!(
+            foreground_process_change(&mut published, Some("nvim".into())),
+            Some(Some("nvim".into()))
+        );
+        assert_eq!(foreground_process_change(&mut published, None), Some(None));
     }
 
     #[test]

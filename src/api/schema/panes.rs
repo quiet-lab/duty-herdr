@@ -506,6 +506,10 @@ pub struct PaneInfo {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
+    /// Name of the process leading the pane's foreground job (the pane shell
+    /// when it is in front). Absent until the first process probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_process: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

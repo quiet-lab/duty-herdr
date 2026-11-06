@@ -1420,6 +1420,10 @@ impl ClientShellState {
                         left.tab_id != right.tab_id
                             || left.workspace_id != right.workspace_id
                             || left.label != right.label
+                            || left.custom_label != right.custom_label
+                            || left.place != right.place
+                            || left.agent_label != right.agent_label
+                            || left.foreground_process != right.foreground_process
                             || left.zoomed != right.zoomed
                     })
                 || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)

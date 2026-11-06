@@ -297,9 +297,13 @@ impl TerminalState {
             .title
     }
 
+    /// `effective_presentation().display_agent` without building the title
+    /// and state labels.
     pub fn effective_display_agent(&self) -> Option<String> {
-        self.effective_presentation_for_state_at(self.state, Instant::now())
-            .display_agent
+        if self.agent_metadata.is_empty() {
+            return None;
+        }
+        self.newest_metadata_display_agent(Instant::now(), true)
     }
 
     pub fn effective_presentation(&self) -> EffectivePresentation {

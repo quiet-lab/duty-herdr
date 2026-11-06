@@ -524,7 +524,7 @@ impl<'de> Deserialize<'de> for StatusIconFrames {
 /// Status icons must render predictably in a fixed-width cell grid: one or
 /// two cells wide, and without the U+FE0F variation selector, whose width
 /// terminals disagree on.
-fn validate_status_icon(value: &str) -> Result<(), String> {
+pub(super) fn validate_status_icon(value: &str) -> Result<(), String> {
     if value.is_empty() {
         return Err("status icon must not be empty".into());
     }
@@ -1430,6 +1430,8 @@ pub struct UiConfig {
     pub status_indicators: StatusIndicatorStyle,
     /// Per-status icon overrides applied on top of `status_indicators`.
     pub status_icons: StatusIcons,
+    /// Symbols and colors Herdr assigns to workspaces, by directory.
+    pub workspace_symbols: super::workspace_symbols::WorkspaceSymbolsConfig,
     /// Cursor shape rules keyed by canonical agent id, matched against the agent's detection screen.
     #[serde(deserialize_with = "super::screen_cursor::deserialize_cursor_shape_by_screen")]
     pub cursor_shape_by_screen: BTreeMap<String, ScreenCursorShapeConfig>,
@@ -1664,6 +1666,7 @@ impl Default for UiConfig {
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             status_icons: StatusIcons::default(),
+            workspace_symbols: super::workspace_symbols::WorkspaceSymbolsConfig::default(),
             cursor_shape_by_screen: BTreeMap::new(),
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),

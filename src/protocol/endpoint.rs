@@ -307,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn label_facts_are_optional_in_generation_one_snapshot() {
+        let frozen: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/endpoint-snapshot-v1.json"
+        )))
+        .unwrap();
+        for tab in frozen["tabs"].as_array().unwrap() {
+            assert!(tab.get("place").is_none());
+        }
+        let snapshot: ClientShellSnapshot = serde_json::from_value(frozen).unwrap();
+        assert!(snapshot.tabs.iter().all(|tab| tab.place.is_none()
+            && tab.agent_label.is_none()
+            && tab.foreground_process.is_none()));
+        assert!(snapshot
+            .panes
+            .iter()
+            .all(|pane| pane.foreground_process.is_none()));
+    }
+
+    #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
         let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot).unwrap()

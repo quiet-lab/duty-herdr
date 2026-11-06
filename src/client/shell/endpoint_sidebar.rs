@@ -324,7 +324,11 @@ pub(super) fn render_expanded(
                         let workspace = snapshot.workspaces.get(entry.index)?;
                         Some(
                             super::sidebar::workspace_rows(
-                                workspace,
+                                super::labels::LabeledSnapshot::new(
+                                    snapshot,
+                                    Some(&endpoint.labels),
+                                ),
+                                entry.index,
                                 super::sidebar::displayed_workspace_status(
                                     snapshot,
                                     workspace,
@@ -333,9 +337,7 @@ pub(super) fn render_expanded(
                                 entry.indented,
                                 &config.spaces,
                             )
-                            .len()
-                            .max(1)
-                            .min(u16::MAX as usize) as u16,
+                            .height(),
                         )
                     })
                     .unwrap_or(1)
@@ -456,12 +458,13 @@ pub(super) fn render_expanded(
                     collapsed_groups,
                 );
                 let tokens = super::sidebar::workspace_rows(
-                    workspace,
+                    super::labels::LabeledSnapshot::new(snapshot, Some(&endpoint.labels)),
+                    entry.index,
                     status,
                     entry.indented,
                     &config.spaces,
                 );
-                let height = (tokens.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+                let height = tokens.height().min(body.height);
                 if y.saturating_add(height) > body.bottom() {
                     break;
                 }

@@ -1056,6 +1056,20 @@ pub struct ClientShellTab {
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
+    /// Repository name of the Git checkout holding the tab's root pane, or that
+    /// pane's cwd with `~` when it is outside Git. The first tab names the
+    /// workspace. Optional in `shell.snapshot.v1`: older servers omit it, older
+    /// clients ignore it. Not skipped when empty because the binary snapshot
+    /// variant cannot omit fields.
+    #[serde(default)]
+    pub place: Option<String>,
+    /// Display name of the agent detected in this tab, preferring the tab's
+    /// focused pane. Optional like `place`.
+    #[serde(default)]
+    pub agent_label: Option<String>,
+    /// Foreground process name of the tab's focused pane. Optional like `place`.
+    #[serde(default)]
+    pub foreground_process: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1068,6 +1082,11 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Optional in `shell.snapshot.v1`: older servers omit it, older clients ignore it.
+    /// Not skipped when empty because the binary snapshot variant cannot omit fields.
+    /// Name of the foreground process; `None` until the first process probe.
+    #[serde(default)]
+    pub foreground_process: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2845,6 +2864,9 @@ mod tests {
                 zoomed: false,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
+                place: Some("repo".into()),
+                agent_label: None,
+                foreground_process: Some("nvim".into()),
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
@@ -2855,6 +2877,7 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                foreground_process: Some("nvim".into()),
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {
@@ -2869,6 +2892,26 @@ mod tests {
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_shell_pane_without_foreground_process_defaults_to_none() {
+        let pane = ClientShellPane {
+            pane_id: "w1:p1".into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            label: None,
+            cwd: None,
+            foreground_cwd: None,
+            focused: false,
+            right_click_passthrough: false,
+            foreground_process: Some("nvim".into()),
+        };
+        let mut value = serde_json::to_value(&pane).unwrap();
+        assert_eq!(value["foreground_process"], "nvim");
+        value.as_object_mut().unwrap().remove("foreground_process");
+        let decoded: ClientShellPane = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.foreground_process, None);
     }
 
     #[test]
