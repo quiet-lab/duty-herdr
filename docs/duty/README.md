@@ -459,9 +459,9 @@ herdr pane activate <PANE_ID>
 получают события фокуса (`CSI O` и `CSI I`) так же, как при `pane.focus`; клиент
 на другом workspace застаёт фокус на панели, когда переходит туда.
 В активном workspace сервера метод действует как `pane.focus`. Вкладка в зуме
-остаётся в зуме и показывает активированную панель. Панели фонового workspace
-не отмечаются просмотренными, событий `pane.focused` и `workspace.focused`
-нет.
+остаётся в зуме и показывает активированную панель. Панели workspace, который
+никто не смотрит, не отмечаются просмотренными; событий `pane.focused`
+и `workspace.focused` для фонового workspace нет.
 
 Ответ:
 
@@ -472,8 +472,12 @@ herdr pane activate <PANE_ID>
   "zoomed": false, "workspace_focused": false, "pane": {…}}}}
 ```
 
-`changed` — сменились активная вкладка или фокус вкладки, `workspace_focused` —
-workspace панели активен на сервере. `pane` — обычный `PaneInfo`: его поле
+`changed`, `tab_changed` и `focus_changed` описывают состояние сессии:
+активную вкладку workspace и фокус вкладки. Клиент, который смотрел другую
+вкладку этого workspace, переходит на вкладку панели и при `changed: false`.
+`workspace_focused` — workspace панели активен на сервере (поле `focused`
+в `workspace list`); панели вкладки, которую клиент увидел сразу, отмечаются
+просмотренными. `pane` — обычный `PaneInfo`: его поле
 `focused` по-прежнему означает фокус всей сессии и для фонового workspace
 равно `false`; фокус внутри вкладки показывает `herdr pane layout --pane <id>`
 (`focused_pane_id`). Несуществующая панель — ошибка `pane_not_found`.

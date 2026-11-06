@@ -178,6 +178,9 @@ async fn public_pane_activate_selects_background_tab_for_every_client() {
     let _ = away_control.recv().expect("away snapshot");
     let _ = other_control.recv().expect("other snapshot");
     assert!(server.focus_shell_client_on_tab(73, &first_tab_id));
+    for pane in server.app.state.workspaces[1].tabs[1].panes.values_mut() {
+        pane.seen = false;
+    }
     let root_public = server.app.public_pane_id(1, fixture.second_root).unwrap();
 
     let (request, response_rx) = activate_request(root_public);
@@ -196,6 +199,13 @@ async fn public_pane_activate_selects_background_tab_for_every_client() {
         server.shell_tab_id_for_client(73).as_deref(),
         Some(second_tab_id.as_str()),
         "a client on the workspace follows the activated tab"
+    );
+    assert!(
+        server.app.state.workspaces[1].tabs[1]
+            .panes
+            .values()
+            .all(|pane| pane.seen),
+        "panes shown to a watching client are seen"
     );
     for client_id in [72, 73] {
         let location = server.clients[&client_id]

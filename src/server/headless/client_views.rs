@@ -208,6 +208,7 @@ impl HeadlessServer {
             return false;
         };
         let workspace_id = self.app.public_workspace_id(workspace_index);
+        let mut watched = false;
         for client in self
             .clients
             .values_mut()
@@ -215,6 +216,21 @@ impl HeadlessServer {
         {
             if let Some(location) = client.shell_location.as_mut() {
                 location.activate_tab(workspace_id.clone(), tab_id.clone());
+                watched |= location.focused_workspace_id.as_deref() == Some(&workspace_id);
+            }
+        }
+        // A client looking at the workspace now shows the tab: its panes are seen.
+        if watched {
+            if let Some(tab) = self
+                .app
+                .state
+                .workspaces
+                .get_mut(workspace_index)
+                .and_then(|workspace| workspace.tabs.get_mut(tab_index))
+            {
+                for pane in tab.panes.values_mut() {
+                    pane.seen = true;
+                }
             }
         }
         true
@@ -1010,8 +1026,9 @@ impl HeadlessServer {
                     .emit_focus_api_events(target.workspace_index, target.pane_id);
             }
         }
+        // An activation can show another tab to every client on that workspace.
         let geometry_changed = method_claims_geometry
-            && if reconcile {
+            && if reconcile || activated_pane_id.is_some() {
                 self.reapply_controlled_shell_tab_geometry(false)
             } else {
                 self.claim_shell_tab_geometry(client_id, false)
