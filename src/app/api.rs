@@ -354,6 +354,8 @@ impl App {
                 None
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        // The background task publishes this event only on an actual change.
+        let foreground_process_changed = matches!(ev, AppEvent::ForegroundProcessChanged { .. });
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
         if update_ready.is_some() {
@@ -382,6 +384,10 @@ impl App {
         self.sync_screen_cursor_rules();
         if terminal_cwd_reported {
             self.request_git_identity_refresh(Instant::now());
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+        }
+        if foreground_process_changed {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }

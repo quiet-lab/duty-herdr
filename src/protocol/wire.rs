@@ -1068,6 +1068,10 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Optional in `shell.snapshot.v1`: older servers omit it, older clients ignore it.
+    /// Name of the foreground process; `None` until the first process probe.
+    #[serde(default)]
+    pub foreground_process: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2855,6 +2859,7 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                foreground_process: Some("nvim".into()),
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {
@@ -2869,6 +2874,26 @@ mod tests {
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn client_shell_pane_without_foreground_process_defaults_to_none() {
+        let pane = ClientShellPane {
+            pane_id: "w1:p1".into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            label: None,
+            cwd: None,
+            foreground_cwd: None,
+            focused: false,
+            right_click_passthrough: false,
+            foreground_process: Some("nvim".into()),
+        };
+        let mut value = serde_json::to_value(&pane).unwrap();
+        assert_eq!(value["foreground_process"], "nvim");
+        value.as_object_mut().unwrap().remove("foreground_process");
+        let decoded: ClientShellPane = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.foreground_process, None);
     }
 
     #[test]

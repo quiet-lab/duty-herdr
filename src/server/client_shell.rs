@@ -146,6 +146,7 @@ pub(super) fn snapshot_with_completions(
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
+                foreground_process: pane.foreground_process,
             }
         })
         .collect();
@@ -629,6 +630,45 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_and_pane_info_carry_foreground_process() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("active")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let pane_id = *app.state.workspaces[0].panes.keys().next().unwrap();
+
+        let (shell, _) = snapshot_with_completions(&app, "boot", 1, None, None);
+        assert_eq!(shell.panes[0].foreground_process, None);
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("nvim".into()),
+        });
+        let (shell, _) = snapshot_with_completions(&app, "boot", 2, None, None);
+        assert_eq!(shell.panes[0].foreground_process.as_deref(), Some("nvim"));
+        let info = app.session_metadata_snapshot();
+        assert_eq!(info.panes[0].foreground_process.as_deref(), Some("nvim"));
+        let json = serde_json::to_value(&info.panes[0]).unwrap();
+        assert_eq!(json["foreground_process"], "nvim");
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: None,
+        });
+        let info = app.session_metadata_snapshot();
+        assert_eq!(info.panes[0].foreground_process, None);
+        let json = serde_json::to_value(&info.panes[0]).unwrap();
+        assert!(json.get("foreground_process").is_none());
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn snapshot_metadata_skips_scroll_reads_and_preserves_public_session_data() {
