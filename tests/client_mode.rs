@@ -1597,8 +1597,9 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
     // Without an agent the workspace and tab tokens show the place (the root
     // pane cwd outside Git) and app, not the manual labels `space-a`, `tab-a`.
     // The workspace token always names the first tab.
-    let workspace_place = format!("|W={}", base.display());
-    let first_place = [workspace_place.clone(), format!("|T={}", base.display())];
+    let base_name = base.file_name().unwrap().to_string_lossy().into_owned();
+    let workspace_place = format!("|W={base_name}");
+    let first_place = [workspace_place.clone(), format!("|T={base_name}")];
     let renamed = wait_for_window_title_with(&output, "|P=pane-a|O=", &first_place);
     assert!(!renamed.contains("W=space-a"), "{renamed}");
     assert!(!renamed.contains("T=tab-a"), "{renamed}");
@@ -1613,7 +1614,7 @@ fn configured_window_title_tracks_all_tokens_and_focused_osc_only() {
 
     let second_cwd = base.join("second");
     fs::create_dir_all(&second_cwd).unwrap();
-    let second_place = [workspace_place, format!("|T={}", second_cwd.display())];
+    let second_place = [workspace_place, "|T=second".to_string()];
     let second_tab = send_json_request(
         &api_socket,
         &serde_json::json!({

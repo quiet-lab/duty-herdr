@@ -415,7 +415,7 @@ fn window_title_waits_for_a_foreground_client_to_exist() {
 
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -427,7 +427,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&first_control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
 
     // ClientConnected assigns the foreground client directly rather than
@@ -449,7 +449,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
 
     assert_eq!(
         next_window_title(&second_control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -463,7 +463,7 @@ fn configured_window_title_reaches_the_foreground_client_once_per_change() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("/srv/herd//srv/herd".to_string()))
+        Some(Some("herd/herd".to_string()))
     );
 
     // An unchanged title must not re-emit an OSC on every render.
@@ -556,7 +556,7 @@ fn a_foreground_client_without_a_writer_does_not_cache_the_window_title() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
 
     shutdown_test_runtimes(&mut server);
@@ -592,7 +592,7 @@ fn api_window_title_wins_until_it_is_cleared() {
     server.handle_client_window_title_api("clear".into(), None);
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("/srv/ops".to_string()))
+        Some(Some("ops".to_string()))
     );
 
     shutdown_test_runtimes(&mut server);
@@ -622,7 +622,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
     server.sync_window_title();
     assert_eq!(
         next_window_title(&first_control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
 
     // A second terminal starts on whatever its shell or ssh left behind.
@@ -642,7 +642,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
 
     assert_eq!(
         next_window_title(&second_control_rx),
-        Some(Some("/srv/herd".to_string()))
+        Some(Some("herd".to_string()))
     );
     shutdown_test_runtimes(&mut server);
 }

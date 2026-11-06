@@ -21,7 +21,7 @@ fn with_second_tab(mut projected: ClientShellSnapshot, active: bool) -> ClientSh
     second.label = "2".into();
     second.custom_label = false;
     second.focused = active;
-    second.place = Some("~/notes".into());
+    second.place = Some("notes".into());
     second.foreground_process = Some("htop".into());
     projected.tabs[0].focused = !active;
     projected.tabs.push(second);
@@ -110,10 +110,10 @@ rows = [["place", "app"], ["auto_label"]]
     )
     .expect("config");
     let mut projected = labelled_snapshot();
-    projected.tabs[0].place = Some("~/notes".into());
+    projected.tabs[0].place = Some("notes".into());
     let (_, rows) = compose_text(&config, projected);
-    line_with(&rows, "~/notes · nvim");
-    line_with(&rows, "@ ~/notes · nvim");
+    line_with(&rows, "notes · nvim");
+    line_with(&rows, "@ notes · nvim");
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn active_later_tab_adds_branch_row_under_workspace_and_keeps_hits_aligned() {
     };
     assert!(sidebar(block.y).contains("@ herdr · nvim"));
     let tab_row = sidebar(block.y + 1);
-    assert!(tab_row.contains("└─ @ ~/notes · htop"), "{tab_row}");
+    assert!(tab_row.contains("└─ @ notes · htop"), "{tab_row}");
     assert!(sidebar(block.y + 2).contains("main"));
 
     // A click on the tab row belongs to the workspace block.
@@ -166,7 +166,7 @@ fn tab_row_shows_manual_tab_label_only_while_its_agent_lives() {
     projected.tabs[1].custom_label = true;
     let config = Config::default();
     let (_, rows) = compose_text(&config, projected.clone());
-    assert!(line_with(&rows, "└─").contains("@ ~/notes · htop"));
+    assert!(line_with(&rows, "└─").contains("@ notes · htop"));
 
     projected.tabs[1].agent_label = Some("opus".into());
     let (_, rows) = compose_text(&config, projected);
@@ -182,7 +182,7 @@ fn tab_bar_labels_follow_the_shared_rule() {
     let (_, rows) = compose_text(&config, projected.clone());
     let bar = &rows[0];
     assert!(bar.contains("@ herdr · nvim"), "{bar}");
-    assert!(bar.contains("@ ~/notes · htop"), "{bar}");
+    assert!(bar.contains("@ notes · htop"), "{bar}");
     assert!(!bar.contains("main"), "{bar}");
 
     projected.tabs[0].agent_label = Some("opus".into());
@@ -300,7 +300,7 @@ fn snapshot_labels_index_matches_scanning_the_snapshot() {
         assert_eq!(indexed.tab_label(tab), scanned.tab_label(tab));
     }
     assert_eq!(indexed.active_later_tab(0), Some(1));
-    assert_eq!(indexed.tab_label(1), "@ ~/notes · htop");
+    assert_eq!(indexed.tab_label(1), "@ notes · htop");
     assert_eq!(indexed.workspace_label(1, "x"), "mine");
     assert_eq!(indexed.tab_label(2), "% herdr · opus");
 
@@ -310,7 +310,7 @@ fn snapshot_labels_index_matches_scanning_the_snapshot() {
     next.tabs[1].foreground_process = Some("btop".into());
     assert_eq!(
         super::super::labels::LabeledSnapshot::new(&next, Some(&labels)).tab_label(1),
-        "@ ~/notes · btop"
+        "@ notes · btop"
     );
 }
 
@@ -348,9 +348,9 @@ fn navigator_rows_follow_the_shared_rule() {
         .find(|row| matches!(row.target, ClientNavigatorTarget::Workspace { .. }))
         .expect("workspace row");
     assert_eq!(workspace.label, "@ herdr · nvim");
-    assert!(found.iter().any(|row| row
-        .detail
-        .starts_with("@ herdr · nvim / @ ~/notes · htop / ")));
+    assert!(found
+        .iter()
+        .any(|row| row.detail.starts_with("@ herdr · nvim / @ notes · htop / ")));
     assert!(!found.iter().any(|row| row.label.contains("mine")));
 
     projected.tabs[0].agent_label = Some("opus".into());
