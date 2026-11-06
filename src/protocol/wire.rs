@@ -725,6 +725,7 @@ impl Clone for CellData {
 }
 
 impl CellData {
+    #[inline]
     pub(crate) fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
             symbol: cell.symbol().to_owned(),
@@ -734,6 +735,19 @@ impl CellData {
             skip: cell.skip,
             hyperlink: None,
         }
+    }
+
+    /// Overwrites this cell with the conversion of `cell`, keeping the symbol
+    /// allocation. Equal to `*self = CellData::from_ratatui_cell(cell)`.
+    #[inline]
+    pub(crate) fn assign_from_ratatui_cell(&mut self, cell: &ratatui::buffer::Cell) {
+        self.symbol.clear();
+        self.symbol.push_str(cell.symbol());
+        self.fg = color_to_u32(cell.fg);
+        self.bg = color_to_u32(cell.bg);
+        self.modifier = modifier_to_u16(cell.modifier);
+        self.skip = cell.skip;
+        self.hyperlink = None;
     }
 }
 
@@ -797,6 +811,27 @@ impl FrameData {
         let area = buffer.area;
         let width = area.width;
         let height = area.height;
+
+        // Without hyperlinks every cell converts on its own: walk the row-major
+        // content directly instead of resolving each position.
+        if hyperlinks.is_empty()
+            && area.x == 0
+            && area.y == 0
+            && buffer.content.len() == (width as usize) * (height as usize)
+        {
+            return FrameData {
+                cells: buffer
+                    .content
+                    .iter()
+                    .map(CellData::from_ratatui_cell)
+                    .collect(),
+                width,
+                height,
+                cursor,
+                hyperlinks: Vec::new(),
+                graphics: Vec::new(),
+            };
+        }
 
         let mut hyperlink_uris = Vec::<String>::new();
         let mut hyperlink_indices = HashMap::<&str, u32>::new();

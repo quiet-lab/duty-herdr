@@ -387,12 +387,19 @@ impl ClientShellState {
             self.hits.tab_scroll_left = Rect::default();
             self.hits.tab_scroll_right = Rect::default();
         }
-        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
         let mode_bar_cells = mode_bar.map(|bar| {
-            let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
-            frame.cells[start..start + usize::from(bar.width)].to_vec()
+            let start = usize::from(bar.y) * usize::from(buffer.area.width) + usize::from(bar.x);
+            buffer.content[start..start + usize::from(bar.width)]
+                .iter()
+                .map(crate::protocol::CellData::from_ratatui_cell)
+                .collect::<Vec<_>>()
         });
-        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        let mut frame = compose_pane_surface_frame(
+            &buffer,
+            &surface.frame,
+            layout.pane_surface,
+            &mut self.recycled_cells,
+        );
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self
