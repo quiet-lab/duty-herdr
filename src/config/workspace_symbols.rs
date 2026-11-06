@@ -5,11 +5,15 @@
 //! path = "~/work/pets/duty-herdr"
 //! main = "🦁"
 //! tasks = ["🦄", "🦌", "🦊"]
-//! colors = ["#f38ba8", "#a6e3a1"]
 //!
 //! [ui.workspace_symbols.outside]
 //! main = "🏠"
 //! tasks = ["🐟", "🐠"]
+//!
+//! [ui.workspace_symbols.color_rule]
+//! hue_step = 10
+//! saturation = [50, 70]
+//! value = [70, 100]
 //! ```
 //!
 //! Values are validated while parsing, so an invalid entry rejects the `[ui]`
@@ -18,13 +22,98 @@
 use serde::Deserialize;
 
 /// Symbol sets keyed by directory plus the set for workspaces outside them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceSymbolsConfig {
     /// Per-directory sets; the longest matching `path` wins.
     pub dirs: Vec<WorkspaceSymbolDirConfig>,
     /// Set for workspaces whose directory matches no `dirs` entry.
     pub outside: Option<WorkspaceSymbolSetConfig>,
+    /// How the color of a child workspace is chosen.
+    pub color_rule: WorkspaceColorRule,
+}
+
+/// `[ui.workspace_symbols.color_rule]`: a child workspace gets a random HSV
+/// color whose hue is a multiple of `hue_step` not shown by another workspace,
+/// with saturation and value drawn from the given percent ranges.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, try_from = "WorkspaceColorRuleRaw")]
+pub struct WorkspaceColorRule {
+    /// Hue step in degrees; divides 360.
+    pub hue_step: u16,
+    /// Saturation range in percent.
+    pub saturation: [f64; 2],
+    /// Value (brightness) range in percent.
+    pub value: [f64; 2],
+}
+
+impl Default for WorkspaceColorRule {
+    fn default() -> Self {
+        Self {
+            hue_step: 10,
+            saturation: [50.0, 70.0],
+            value: [70.0, 100.0],
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct WorkspaceColorRuleRaw {
+    hue_step: u16,
+    saturation: [f64; 2],
+    value: [f64; 2],
+}
+
+impl Default for WorkspaceColorRuleRaw {
+    fn default() -> Self {
+        let rule = WorkspaceColorRule::default();
+        Self {
+            hue_step: rule.hue_step,
+            saturation: rule.saturation,
+            value: rule.value,
+        }
+    }
+}
+
+impl TryFrom<WorkspaceColorRuleRaw> for WorkspaceColorRule {
+    type Error = String;
+
+    fn try_from(raw: WorkspaceColorRuleRaw) -> Result<Self, Self::Error> {
+        if raw.hue_step == 0 || 360 % raw.hue_step != 0 {
+            return Err(format!(
+                "color_rule.hue_step {} must be a positive divisor of 360",
+                raw.hue_step
+            ));
+        }
+        for (name, [min, max]) in [("saturation", raw.saturation), ("value", raw.value)] {
+            let in_range = |x: f64| (0.0..=100.0).contains(&x);
+            if !in_range(min) || !in_range(max) || min > max {
+                return Err(format!(
+                    "color_rule.{name} [{min}, {max}] must satisfy 0 <= min <= max <= 100"
+                ));
+            }
+        }
+        Ok(Self {
+            hue_step: raw.hue_step,
+            saturation: raw.saturation,
+            value: raw.value,
+        })
+    }
+}
+
+/// The removed `colors` field: present only to reject old configurations with
+/// a clear message instead of ignoring them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemovedColors;
+
+impl<'de> Deserialize<'de> for RemovedColors {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        Err(serde::de::Error::custom(
+            "colors is no longer supported: the color is computed by the rule \
+             ui.workspace_symbols.color_rule",
+        ))
+    }
 }
 
 /// One `[[ui.workspace_symbols.dirs]]` entry.
@@ -38,9 +127,10 @@ pub struct WorkspaceSymbolDirConfig {
     /// Symbols handed to child workspaces opened from this directory.
     #[serde(default)]
     pub tasks: Vec<WorkspaceSymbol>,
-    /// `#rrggbb` colors handed to child workspaces opened from this directory.
+    /// Rejects the removed `colors` field.
     #[serde(default)]
-    pub colors: Vec<WorkspaceColor>,
+    #[allow(dead_code)] // never populated: any value is a parse error
+    colors: Option<RemovedColors>,
 }
 
 /// `[ui.workspace_symbols.outside]`.
@@ -51,8 +141,9 @@ pub struct WorkspaceSymbolSetConfig {
     pub main: Option<WorkspaceSymbol>,
     /// Symbols handed to child workspaces.
     pub tasks: Vec<WorkspaceSymbol>,
-    /// `#rrggbb` colors handed to child workspaces.
-    pub colors: Vec<WorkspaceColor>,
+    /// Rejects the removed `colors` field.
+    #[allow(dead_code)] // never populated: any value is a parse error
+    colors: Option<RemovedColors>,
 }
 
 /// A workspace symbol: one or two cells wide, without U+FE0F.
@@ -72,33 +163,6 @@ impl TryFrom<String> for WorkspaceSymbol {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         super::model::validate_status_icon(&value)
             .map_err(|err| format!("workspace symbol: {err}"))?;
-        Ok(Self(value))
-    }
-}
-
-/// A `#rrggbb` color.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
-pub struct WorkspaceColor(String);
-
-impl WorkspaceColor {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for WorkspaceColor {
-    type Error = String;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        let valid = value
-            .strip_prefix('#')
-            .is_some_and(|hex| hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit()));
-        if !valid {
-            return Err(format!(
-                "workspace color {value:?} must be a #rrggbb hex color"
-            ));
-        }
         Ok(Self(value))
     }
 }
@@ -133,6 +197,7 @@ impl TryFrom<String> for WorkspaceSymbolPath {
 
 #[cfg(test)]
 mod tests {
+    use super::WorkspaceColorRule;
     use crate::config::Config;
 
     fn parse(toml: &str) -> Result<Config, String> {
@@ -154,7 +219,6 @@ mod tests {
 path = "~/work/pets/duty-herdr"
 main = "🦁"
 tasks = ["🦄", "🦌"]
-colors = ["#f38ba8", "#A6E3A1"]
 
 [[ui.workspace_symbols.dirs]]
 path = "/srv/other"
@@ -175,16 +239,10 @@ tasks = ["🐟"]
             first.tasks.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             ["🦄", "🦌"]
         );
-        assert_eq!(
-            first.colors.iter().map(|c| c.as_str()).collect::<Vec<_>>(),
-            ["#f38ba8", "#A6E3A1"]
-        );
         assert_eq!(symbols.dirs[1].main, None);
-        assert!(symbols.dirs[1].colors.is_empty());
         let outside = symbols.outside.as_ref().unwrap();
         assert_eq!(outside.main.as_ref().map(|s| s.as_str()), Some("🏠"));
         assert_eq!(outside.tasks.len(), 1);
-        assert!(outside.colors.is_empty());
     }
 
     #[test]
@@ -205,11 +263,50 @@ tasks = ["🐟"]
     }
 
     #[test]
-    fn workspace_symbols_reject_invalid_colors() {
-        for value in ["red", "#fff", "#12345g", "123456", "#1234567"] {
-            let toml = format!("[ui.workspace_symbols.outside]\ncolors = [\"{value}\"]\n");
-            let err = parse(&toml).unwrap_err();
-            assert!(err.contains("#rrggbb"), "{value}: {err}");
+    fn color_rule_defaults() {
+        let rule = parse("").unwrap().ui.workspace_symbols.color_rule;
+        assert_eq!(rule, WorkspaceColorRule::default());
+        assert_eq!(rule.hue_step, 10);
+        assert_eq!(rule.saturation, [50.0, 70.0]);
+        assert_eq!(rule.value, [70.0, 100.0]);
+        let rule = parse("[ui.workspace_symbols.color_rule]\nhue_step = 30\nvalue = [60, 90.5]\n")
+            .unwrap()
+            .ui
+            .workspace_symbols
+            .color_rule;
+        assert_eq!(rule.hue_step, 30);
+        assert_eq!(rule.saturation, [50.0, 70.0]);
+        assert_eq!(rule.value, [60.0, 90.5]);
+    }
+
+    #[test]
+    fn removed_colors_field_is_rejected_with_a_clear_message() {
+        for toml in [
+            "[ui.workspace_symbols.outside]\ncolors = [\"#112233\"]\n",
+            "[[ui.workspace_symbols.dirs]]\npath = \"/a\"\ncolors = []\n",
+        ] {
+            let err = parse(toml).unwrap_err();
+            assert!(
+                err.contains("colors is no longer supported")
+                    && err.contains("ui.workspace_symbols.color_rule"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn color_rule_rejects_invalid_values() {
+        for value in [
+            "hue_step = 0",
+            "hue_step = 7",
+            "saturation = [70, 50]",
+            "saturation = [-1, 50]",
+            "saturation = [50, 101]",
+            "value = [0, 120]",
+            "value = [80, 70]",
+        ] {
+            let toml = format!("[ui.workspace_symbols.color_rule]\n{value}\n");
+            assert!(parse(&toml).is_err(), "{value}");
         }
     }
 
@@ -231,7 +328,7 @@ tasks = ["🐟"]
     #[test]
     fn invalid_workspace_symbols_reject_the_live_ui_section() {
         let loaded = super::super::io::load_live_config_from_str(
-            "[ui.workspace_symbols.outside]\ncolors = [\"red\"]\n",
+            "[ui.workspace_symbols.color_rule]\nhue_step = 7\n",
         )
         .unwrap();
         assert!(loaded
@@ -242,7 +339,7 @@ tasks = ["🐟"]
             loaded
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.contains("#rrggbb")),
+                .any(|diagnostic| diagnostic.contains("hue_step")),
             "{:?}",
             loaded.diagnostics
         );
