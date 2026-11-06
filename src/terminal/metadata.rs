@@ -1294,7 +1294,9 @@ mod tests {
                 saved("a", "old", 2_000, None),
                 saved("b", "new", 1_000, None),
                 saved("c", "short", 5_000, Some(5_000)),
-                saved("d", "timed", 1_000, Some(60_000)),
+                // Ages are distinct on purpose: sources live in a HashMap, so
+                // equal ages would make the winner depend on hash order.
+                saved("d", "timed", 2_000, Some(60_000)),
             ],
             Instant::now(),
         );
