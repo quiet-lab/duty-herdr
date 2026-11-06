@@ -230,7 +230,12 @@ impl SidebarTokenColor {
         let mut atoms = [ColorAtom::Panel; MAX_COLOR_ALTERNATIVES];
         let mut len = 0;
         for part in value.split('|') {
-            let atom = Self::parse_atom(part.trim())?;
+            let atom = Self::parse_atom(part)?;
+            if len > 0 && !matches!(atoms[len - 1], ColorAtom::Token(_)) {
+                return Err(format!(
+                    "sidebar token color `{value}` has an alternative after one that always resolves"
+                ));
+            }
             if len == MAX_COLOR_ALTERNATIVES {
                 return Err(format!(
                     "sidebar token color accepts at most {MAX_COLOR_ALTERNATIVES} alternatives"
@@ -1140,6 +1145,10 @@ rows = [[{ token = "workspace", fg = "$color|#ffffff", bg = "$accent|$color|#89b
             "$bad.name|#fff",
             "$color|red",
             "$color|#abcd",
+            "#fff|$color",
+            "$panel|$color",
+            "$color | #fff",
+            " $color|#fff",
             "$a|$b|$c|$d",
         ] {
             assert!(SidebarTokenColor::parse(value).is_err(), "{value}");
