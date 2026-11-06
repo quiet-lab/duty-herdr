@@ -14,16 +14,25 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        self.session_snapshot_with_pane_info(Self::pane_info)
+        self.session_snapshot_with_pane_info(Self::pane_info, Layouts::Include)
     }
 
+    #[cfg(test)]
     pub(crate) fn session_metadata_snapshot(&self) -> SessionSnapshot {
-        self.session_snapshot_with_pane_info(Self::pane_metadata)
+        self.session_snapshot_with_pane_info(Self::pane_metadata, Layouts::Include)
+    }
+
+    /// `session_metadata_snapshot` with empty `layouts`: the client shell
+    /// snapshot does not carry pane layouts, and computing them is a large
+    /// share of its construction.
+    pub(crate) fn session_metadata_snapshot_without_layouts(&self) -> SessionSnapshot {
+        self.session_snapshot_with_pane_info(Self::pane_metadata, Layouts::Omit)
     }
 
     fn session_snapshot_with_pane_info(
         &self,
         pane_info: fn(&Self, usize, crate::layout::PaneId) -> Option<PaneInfo>,
+        layouts_policy: Layouts,
     ) -> SessionSnapshot {
         let focused_workspace_id = self
             .state
@@ -42,22 +51,30 @@ impl App {
         let mut tabs = Vec::new();
         let mut layouts = Vec::new();
         let mut panes = Vec::new();
+        // Same panes in the same order as `collect_agent_infos`; an agent
+        // reuses the metadata built for its pane instead of building it again.
+        let mut agents = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.push(self.workspace_info(ws_idx));
-            for tab_idx in 0..ws.tabs.len() {
+            for (tab_idx, tab) in ws.tabs.iter().enumerate() {
                 if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                     tabs.push(tab);
                 }
-                if let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) {
-                    layouts.push(layout);
+                if layouts_policy == Layouts::Include {
+                    layouts.extend(self.pane_layout_snapshot(ws_idx, tab_idx));
                 }
-                panes.extend(
-                    ws.tabs[tab_idx]
-                        .layout
-                        .pane_ids()
-                        .into_iter()
-                        .filter_map(|pane_id| pane_info(self, ws_idx, pane_id)),
-                );
+                for pane_id in tab.layout.pane_ids() {
+                    let Some(pane) = pane_info(self, ws_idx, pane_id) else {
+                        continue;
+                    };
+                    if let Some(terminal) = self.agent_terminal_for_pane(ws_idx, pane_id) {
+                        agents.push(crate::app::agents::agent_info_from_pane(
+                            terminal,
+                            pane.clone(),
+                        ));
+                    }
+                    panes.push(pane);
+                }
             }
         }
 
@@ -71,9 +88,15 @@ impl App {
             tabs,
             panes,
             layouts,
-            agents: self.collect_agent_infos(),
+            agents,
         }
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layouts {
+    Include,
+    Omit,
 }
 
 #[cfg(test)]

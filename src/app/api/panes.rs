@@ -4455,6 +4455,130 @@ mod tests {
         assert!(app.state.terminals[&terminal_id].agent_metadata.is_empty());
     }
 
+    /// Session snapshots build each agent from the metadata of its pane and
+    /// the client shell snapshot omits layouts; both must list exactly what
+    /// the targeted reads return.
+    fn assert_session_snapshots_match_targeted_reads(
+        app: &App,
+    ) -> crate::api::schema::SessionSnapshot {
+        let metadata = app.session_metadata_snapshot();
+        let full = app.session_snapshot();
+        let mut without_layouts = app.session_metadata_snapshot_without_layouts();
+        assert!(without_layouts.layouts.is_empty());
+        assert!(!metadata.layouts.is_empty());
+        without_layouts.layouts = metadata.layouts.clone();
+        assert_eq!(without_layouts, metadata);
+        assert_eq!(metadata.agents, app.collect_agent_infos());
+        assert_eq!(full.agents, metadata.agents);
+        for agent in &metadata.agents {
+            let (ws_idx, pane_id) = app.parse_pane_id(&agent.pane_id).unwrap();
+            assert_eq!(app.agent_info(ws_idx, pane_id).as_ref(), Some(agent));
+        }
+        for pane in &metadata.panes {
+            let (ws_idx, pane_id) = app.parse_pane_id(&pane.pane_id).unwrap();
+            assert_eq!(app.pane_metadata(ws_idx, pane_id).as_ref(), Some(pane));
+        }
+        for pane in &full.panes {
+            let (ws_idx, pane_id) = app.parse_pane_id(&pane.pane_id).unwrap();
+            assert_eq!(app.pane_info(ws_idx, pane_id).as_ref(), Some(pane));
+        }
+        metadata
+    }
+
+    #[test]
+    fn session_snapshots_follow_token_presentation_expiry_and_id_changes() {
+        let (mut app, root_public) = app_with_test_workspace();
+        app.state.active = Some(0);
+        app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[0].test_add_tab(None);
+        app.state.ensure_test_terminals();
+        let (_, root) = app.parse_pane_id(&root_public).unwrap();
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(root)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Working);
+
+        let mut report = metadata_params(root_public.clone());
+        report.display_agent = Some("Claude Opus".into());
+        report.state_labels =
+            std::collections::HashMap::from([("working".into(), "thinking".into())]);
+        report.tokens = std::collections::HashMap::from([
+            ("symbol".into(), Some("pig".into())),
+            ("color".into(), Some("#adc242".into())),
+        ]);
+        report.ttl_ms = Some(60_000);
+        let response = app.handle_pane_report_metadata("report".into(), report);
+        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
+
+        let snapshot = assert_session_snapshots_match_targeted_reads(&app);
+        assert_eq!(snapshot.panes.len(), 3);
+        assert_eq!(snapshot.agents.len(), 1);
+        let agent = &snapshot.agents[0];
+        assert_eq!(agent.pane_id, root_public);
+        assert_eq!(agent.title.as_deref(), Some("activity"));
+        assert_eq!(agent.display_agent.as_deref(), Some("Claude Opus"));
+        assert_eq!(
+            agent.state_labels,
+            std::collections::HashMap::from([("working".into(), "thinking".into())])
+        );
+        assert_eq!(
+            agent.tokens,
+            std::collections::HashMap::from([
+                ("symbol".into(), "pig".into()),
+                ("color".into(), "#adc242".into()),
+            ])
+        );
+
+        let mut tokens = metadata_params(root_public.clone());
+        tokens.title = None;
+        tokens.tokens = std::collections::HashMap::from([
+            ("symbol".into(), Some("cow".into())),
+            ("color".into(), None),
+        ]);
+        let response = app.handle_pane_report_metadata("tokens".into(), tokens);
+        let _: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let snapshot = assert_session_snapshots_match_targeted_reads(&app);
+        assert_eq!(
+            snapshot.agents[0].tokens,
+            std::collections::HashMap::from([("symbol".into(), "cow".into())])
+        );
+        assert_eq!(snapshot.agents[0].title.as_deref(), Some("activity"));
+
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        let deadline = terminal.next_agent_metadata_expiry().unwrap();
+        terminal
+            .expire_agent_metadata_at(deadline, deadline)
+            .unwrap();
+        let snapshot = assert_session_snapshots_match_targeted_reads(&app);
+        assert_eq!(snapshot.agents[0].title, None);
+        assert_eq!(snapshot.agents[0].display_agent, None);
+        assert!(snapshot.agents[0].state_labels.is_empty());
+        assert_eq!(
+            snapshot.agents[0].tokens,
+            std::collections::HashMap::from([("symbol".into(), "cow".into())])
+        );
+
+        app.state.workspaces[0].id = "wZ".into();
+        let snapshot = assert_session_snapshots_match_targeted_reads(&app);
+        assert_eq!(snapshot.agents[0].pane_id, "wZ:p1");
+        assert_eq!(snapshot.agents[0].workspace_id, "wZ");
+        assert_eq!(snapshot.agents[0].tab_id, "wZ:t1");
+        assert!(snapshot
+            .focused_pane_id
+            .as_deref()
+            .is_some_and(|pane_id| pane_id.starts_with("wZ:p")));
+        assert!(snapshot
+            .panes
+            .iter()
+            .all(|pane| pane.pane_id.starts_with("wZ:p") && pane.tab_id.starts_with("wZ:t")));
+    }
+
     #[test]
     fn pane_tokens_are_independent_from_presentation_guards() {
         let (mut app, pane_id) = app_with_test_workspace();
