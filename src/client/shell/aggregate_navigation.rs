@@ -329,7 +329,10 @@ pub(super) fn navigator_rows(
                     .push(pane);
             }
             for workspace in &snapshot.workspaces {
+                let symbol = super::labels::workspace_symbol(workspace);
+                let workspace_label = super::labels::workspace_label(snapshot, workspace);
                 let workspace_matches = endpoint_query_matches
+                    || text(&workspace_label)
                     || text(&workspace.label)
                     || workspace.branch.as_deref().is_some_and(text);
                 let mut children = Vec::new();
@@ -339,7 +342,8 @@ pub(super) fn navigator_rows(
                     .unwrap_or_default();
                 let multiple_tabs = workspace_tabs.len() > 1;
                 for tab in workspace_tabs {
-                    let tab_matches = workspace_matches || text(&tab.label);
+                    let tab_label = super::labels::tab_label(symbol, tab);
+                    let tab_matches = workspace_matches || text(&tab_label) || text(&tab.label);
                     let tab_panes = panes_by_tab
                         .get(tab.tab_id.as_str())
                         .map(Vec::as_slice)
@@ -363,15 +367,17 @@ pub(super) fn navigator_rows(
                                 .as_deref()
                                 .or(agent.terminal_title_stripped.as_deref())
                         });
-                        let tab_name = (tab.custom_label || tab.label.parse::<usize>().is_err())
-                            .then_some(tab.label.as_str());
+                        let tab_name = (tab.custom_label
+                            || super::labels::tab_has_facts(tab)
+                            || tab.label.parse::<usize>().is_err())
+                        .then_some(tab_label.as_ref());
                         let label = if tab_panes.len() == 1 {
                             match name.or(tab_name).or(title) {
                                 Some(label) => label.to_owned(),
                                 None if multiple_tabs => {
-                                    format!("{} · {}", agent_kind.unwrap_or("terminal"), tab.label)
+                                    format!("{} · {}", agent_kind.unwrap_or("terminal"), tab_label)
                                 }
-                                None => workspace.label.clone(),
+                                None => workspace_label.clone().into_owned(),
                             }
                         } else {
                             let pane_name = name.or(title).or(agent_kind).unwrap_or("terminal");
@@ -405,7 +411,7 @@ pub(super) fn navigator_rows(
                                 meta: meta.to_owned(),
                                 detail: format!(
                                     "{} / {} / {}",
-                                    workspace.label, tab.label, pane.pane_id
+                                    workspace_label, tab_label, pane.pane_id
                                 ),
                                 agent: agent_kind.map(str::to_owned),
                                 status: Some(status),
@@ -426,7 +432,7 @@ pub(super) fn navigator_rows(
                 {
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
-                        label: workspace.label.clone(),
+                        label: workspace_label.clone().into_owned(),
                         meta: workspace.branch.clone().unwrap_or_default(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,

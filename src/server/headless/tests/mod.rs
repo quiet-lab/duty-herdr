@@ -451,18 +451,35 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
 fn configured_window_title_reaches_the_foreground_client_once_per_change() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}/{tab}");
+    server.app.state.workspaces[0].cached_identity_cwd = "/srv/herd".into();
+    server.app.state.workspaces[0].cached_git_space = None;
 
+    // Without an agent the tab token is the tab's place.
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
-        Some(Some("herd/1".to_string()))
+        Some(Some("herd//srv/herd".to_string()))
     );
 
     // An unchanged title must not re-emit an OSC on every render.
     server.sync_window_title();
     assert!(no_window_title(&control_rx));
 
+    // The manual tab label shows while an agent is detected in the tab.
     server.app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
+    server.app.state.ensure_test_terminals();
+    let tab = &server.app.state.workspaces[0].tabs[0];
+    let terminal_id = tab.terminal_id(tab.layout.focused()).unwrap().clone();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Working,
+        );
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),
@@ -649,6 +666,11 @@ async fn promoted_client_window_title_uses_its_own_view() {
         .expect("survivor terminal state");
     terminal.manual_label = Some("client-pane".into());
     terminal.set_terminal_title(Some("CLIENT OSC".into()));
+    // The manual tab label shows while an agent is detected in the tab.
+    terminal.set_detected_state(
+        Some(crate::detect::Agent::Pi),
+        crate::detect::AgentState::Working,
+    );
     server
         .app
         .configure_window_title("{workspace}/{tab}/{pane}/{terminal_title}");

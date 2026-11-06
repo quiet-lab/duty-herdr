@@ -8,72 +8,32 @@
 
 use std::borrow::Cow;
 
+pub(crate) use crate::auto_label::LabelFacts;
+use crate::auto_label::{display_label, non_empty};
 use crate::protocol::{ClientShellSnapshot, ClientShellTab, ClientShellWorkspace};
 
 /// Workspace metadata token holding the workspace symbol.
 pub(crate) const SYMBOL_TOKEN: &str = "symbol";
 
-/// Facts an automatic label is built from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct LabelFacts<'a> {
-    pub(crate) symbol: Option<&'a str>,
-    pub(crate) place: Option<&'a str>,
-    pub(crate) app: Option<&'a str>,
-}
-
-impl<'a> LabelFacts<'a> {
-    /// Facts of `tab`; the symbol belongs to the tab's workspace.
-    pub(crate) fn for_tab(symbol: Option<&'a str>, tab: &'a ClientShellTab) -> Self {
-        Self {
-            symbol,
-            place: non_empty(tab.place.as_deref()),
-            app: tab_app(tab),
-        }
-    }
-
-    /// `<symbol> <place> · <app>`; missing parts are left out with their
-    /// separator. `None` when there is neither a place nor an app.
-    pub(crate) fn auto_label(self) -> Option<String> {
-        if self.place.is_none() && self.app.is_none() {
-            return None;
-        }
-        let head = [self.symbol, self.place]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" ");
-        Some(match self.app {
-            Some(app) if head.is_empty() => app.to_owned(),
-            Some(app) => format!("{head} · {app}"),
-            None => head,
-        })
-    }
+/// Facts of `tab`; the symbol belongs to the tab's workspace.
+pub(crate) fn tab_facts<'a>(symbol: Option<&'a str>, tab: &'a ClientShellTab) -> LabelFacts<'a> {
+    LabelFacts::new(
+        symbol,
+        tab.place.as_deref(),
+        tab.agent_label.as_deref(),
+        tab.foreground_process.as_deref(),
+    )
 }
 
 /// Application of a tab: the detected agent while there is one, otherwise the
 /// foreground process of the tab's focused pane.
 pub(crate) fn tab_app(tab: &ClientShellTab) -> Option<&str> {
-    non_empty(tab.agent_label.as_deref()).or_else(|| non_empty(tab.foreground_process.as_deref()))
+    tab_facts(None, tab).app
 }
 
 /// Whether an agent is detected in `tab`.
 pub(crate) fn tab_has_agent(tab: &ClientShellTab) -> bool {
     non_empty(tab.agent_label.as_deref()).is_some()
-}
-
-/// The shared rule: the manual label while an agent is alive, otherwise the
-/// automatic label, otherwise `fallback`.
-pub(crate) fn display_label<'a>(
-    manual: Option<&'a str>,
-    agent_alive: bool,
-    auto: Option<String>,
-    fallback: &'a str,
-) -> Cow<'a, str> {
-    match (manual, auto) {
-        (Some(manual), _) if agent_alive => Cow::Borrowed(manual),
-        (_, Some(auto)) => Cow::Owned(auto),
-        (_, None) => Cow::Borrowed(fallback),
-    }
 }
 
 pub(crate) fn workspace_symbol(workspace: &ClientShellWorkspace) -> Option<&str> {
@@ -114,7 +74,7 @@ pub(crate) fn tab_label<'a>(symbol: Option<&str>, tab: &'a ClientShellTab) -> Co
     display_label(
         tab.custom_label.then_some(tab.label.as_str()),
         tab_has_agent(tab),
-        LabelFacts::for_tab(symbol, tab).auto_label(),
+        tab_facts(symbol, tab).auto_label(),
         &tab.label,
     )
 }
@@ -143,7 +103,7 @@ impl<'a> WorkspaceLabel<'a> {
                 symbol,
                 ..LabelFacts::default()
             },
-            |tab| LabelFacts::for_tab(symbol, tab),
+            |tab| tab_facts(symbol, tab),
         );
         Self {
             facts,
@@ -177,10 +137,6 @@ pub(crate) fn workspace_label<'a>(
         .display(workspace, &workspace.label)
 }
 
-fn non_empty(value: Option<&str>) -> Option<&str> {
-    value.filter(|value| !value.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,34 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_label_joins_symbol_place_and_app_and_drops_missing_parts() {
-        let facts = |symbol, place, app| LabelFacts { symbol, place, app };
-        assert_eq!(
-            facts(Some("🦦"), Some("herdr"), Some("nvim"))
-                .auto_label()
-                .as_deref(),
-            Some("🦦 herdr · nvim")
-        );
-        assert_eq!(
-            facts(None, Some("herdr"), Some("nvim"))
-                .auto_label()
-                .as_deref(),
-            Some("herdr · nvim")
-        );
-        assert_eq!(
-            facts(Some("🦦"), Some("~/notes"), None)
-                .auto_label()
-                .as_deref(),
-            Some("🦦 ~/notes")
-        );
-        assert_eq!(
-            facts(None, None, Some("nvim")).auto_label().as_deref(),
-            Some("nvim")
-        );
-        assert_eq!(facts(Some("🦦"), None, None).auto_label(), None);
-    }
-
-    #[test]
     fn tab_app_prefers_detected_agent_over_foreground_process() {
         let mut tab = tab("t", None);
         tab.foreground_process = Some("nvim".into());
@@ -241,21 +169,6 @@ mod tests {
         assert!(tab_has_agent(&tab));
         tab.agent_label = Some(String::new());
         assert_eq!(tab_app(&tab), Some("nvim"));
-    }
-
-    #[test]
-    fn manual_label_shows_only_while_agent_is_alive() {
-        assert_eq!(
-            display_label(Some("mine"), true, Some("auto".into()), "x"),
-            "mine"
-        );
-        assert_eq!(
-            display_label(Some("mine"), false, Some("auto".into()), "x"),
-            "auto"
-        );
-        assert_eq!(display_label(None, true, Some("auto".into()), "x"), "auto");
-        assert_eq!(display_label(Some("mine"), false, None, "mine"), "mine");
-        assert_eq!(display_label(None, false, None, "2"), "2");
     }
 
     #[test]

@@ -221,3 +221,39 @@ fn server_without_label_facts_keeps_existing_labels() {
     line_with(&rows, "client-shell");
     assert!(!rows.iter().any(|row| row.contains("└─")));
 }
+
+#[test]
+fn navigator_rows_follow_the_shared_rule() {
+    let mut projected = with_second_tab(labelled_snapshot(), true);
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        tab_id: "tab_2".into(),
+        ..projected.panes[0].clone()
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected.clone()));
+    state.open_navigator_overlay();
+    let rows = |state: &ClientShellState| {
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+            panic!("expected navigator");
+        };
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+    };
+    let found = rows(&state);
+    let workspace = found
+        .iter()
+        .find(|row| matches!(row.target, ClientNavigatorTarget::Workspace { .. }))
+        .expect("workspace row");
+    assert_eq!(workspace.label, "@ herdr · nvim");
+    assert!(found.iter().any(|row| row
+        .detail
+        .starts_with("@ herdr · nvim / @ ~/notes · htop / ")));
+    assert!(!found.iter().any(|row| row.label.contains("mine")));
+
+    projected.tabs[0].agent_label = Some("opus".into());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.open_navigator_overlay();
+    let found = rows(&state);
+    assert!(found.iter().any(|row| row.label == "mine"));
+}

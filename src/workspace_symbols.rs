@@ -186,6 +186,12 @@ impl crate::workspace::Workspace {
         tokens
     }
 
+    /// The published `symbol` token: a reported token, otherwise Herdr's own.
+    pub(crate) fn effective_symbol(&self, rules: &WorkspaceSymbolRules) -> Option<String> {
+        let (symbol, _) = self.herdr_tokens(rules);
+        self.effective_token(SYMBOL_TOKEN, symbol)
+    }
+
     /// One effective token without building the whole map.
     fn effective_token<'a>(&'a self, key: &str, herdr: Option<&'a str>) -> Option<String> {
         self.metadata_tokens
