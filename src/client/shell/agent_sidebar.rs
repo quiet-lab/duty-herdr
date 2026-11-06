@@ -324,6 +324,7 @@ pub(super) fn agent_row(
             workspace: &workspace.label,
             tab: tab_label.as_deref(),
             focused_tab: focused_tab_label.as_deref(),
+            tab_active: agent.tab_id == workspace.active_tab_id,
             pane: agent
                 .title
                 .as_deref()
@@ -333,6 +334,7 @@ pub(super) fn agent_row(
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
             canonical_agent,
             tokens: &tokens,
+            workspace_tokens: &workspace.tokens,
         },
         state_text,
     );
@@ -387,6 +389,11 @@ pub(super) fn render_agent_row(
     };
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
+        let fill = crate::ui::sidebar_row_fill(tokens);
+        let line_style = match fill {
+            Some(fill) => row_style.bg(fill),
+            None => row_style,
+        };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
@@ -397,8 +404,13 @@ pub(super) fn render_agent_row(
             secondary,
             palette,
             rect.width.saturating_sub(indent as u16) as usize,
+            crate::ui::SidebarTokenPaint {
+                panel_text: config.sidebar_panel_text(),
+                cursor: false,
+                fill,
+            },
         ));
-        Paragraph::new(Line::from(spans)).style(row_style).render(
+        Paragraph::new(Line::from(spans)).style(line_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );

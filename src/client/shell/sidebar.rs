@@ -351,7 +351,7 @@ pub(crate) fn render_sidebar(
             selected,
             state.selected_workspace_id.is_some(),
             dragged,
-            palette,
+            config,
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -813,32 +813,24 @@ pub(in crate::client::shell) fn workspace_rows(
             place: facts.place,
             app: facts.app,
             auto_label: auto_label.as_deref(),
+            first_tab_active: labeled.active_later_tab(workspace_index).is_none(),
         },
     );
     let tab_row = labeled
         .active_later_tab(workspace_index)
         .filter(|&tab_index| super::labels::tab_has_facts(&labeled.snapshot.tabs[tab_index]))
-        .map(|tab_index| {
-            let style = rows
-                .first()
-                .and_then(|row| {
-                    row.iter().find(|token| {
-                        matches!(token.kind, crate::ui::ResolvedTokenKind::Workspace(_))
-                    })
-                })
-                .map(|token| token.style)
-                .unwrap_or_default();
+        .and_then(|tab_index| {
+            let text = labeled.tab_label(tab_index).into_owned();
+            let style = crate::ui::sidebar_space_tab_row_style(config, &text, &token_values)?;
             let index = rows.len().min(1);
             rows.insert(
                 index,
                 vec![crate::ui::ResolvedToken {
-                    kind: crate::ui::ResolvedTokenKind::Workspace(
-                        labeled.tab_label(tab_index).into_owned(),
-                    ),
+                    kind: crate::ui::ResolvedTokenKind::Workspace(text),
                     style,
                 }],
             );
-            index
+            Some(index)
         });
     WorkspaceRows { rows, tab_row }
 }
@@ -854,13 +846,26 @@ pub(in crate::client::shell) fn render_workspace_rows(
     selected: bool,
     navigating: bool,
     dragged: bool,
-    palette: &Palette,
+    config: &ClientShellConfig,
 ) {
+    let palette = &config.palette;
+    let panel_text = config.sidebar_panel_text();
     let WorkspaceRows { rows, tab_row } = rows;
+    // The navigation cursor and a dragged block keep their background over token fills.
+    let cursor = selected || dragged;
+    let mut filled = Vec::new();
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
             break;
+        }
+        let fill = crate::ui::sidebar_row_fill(row).filter(|_| !cursor);
+        if let Some(fill) = fill {
+            buffer.set_style(
+                Rect::new(area.x, y, area.width, 1),
+                Style::default().bg(fill),
+            );
+            filled.push(y);
         }
         let mut x = area.x;
         if tab_row == Some(row_index) {
@@ -931,6 +936,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
             Style::default().fg(palette.overlay1),
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
+            crate::ui::SidebarTokenPaint {
+                panel_text,
+                cursor,
+                fill,
+            },
         );
         Paragraph::new(Line::from(spans)).render(
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
@@ -948,7 +958,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         None
     };
     if let Some(background) = background {
-        for y in area.y..area.bottom() {
+        for y in (area.y..area.bottom()).filter(|y| !filled.contains(y)) {
             for x in area.x..area.right() {
                 buffer[(x, y)].set_bg(background);
             }

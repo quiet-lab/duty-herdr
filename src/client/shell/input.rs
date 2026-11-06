@@ -350,6 +350,7 @@ impl ClientShellState {
                 } => {
                     if self.host_background != Some(color) {
                         self.host_background = Some(color);
+                        self.config.host_background = Some(color);
                         outcome.repaint = true;
                     }
                     if !self.host_appearance_explicit {

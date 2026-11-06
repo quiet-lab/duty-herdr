@@ -75,6 +75,38 @@ impl SidebarColorTokenName {
     }
 }
 
+/// Metadata tokens that `$name` colors resolve against: the item's own tokens,
+/// then `fallback` (a pane's workspace tokens), looked up without allocating.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ColorTokens<'a> {
+    pub(crate) item: Option<&'a std::collections::HashMap<String, String>>,
+    pub(crate) fallback: &'a [(String, String)],
+}
+
+impl<'a> ColorTokens<'a> {
+    pub(crate) fn new(item: &'a std::collections::HashMap<String, String>) -> Self {
+        Self {
+            item: Some(item),
+            fallback: &[],
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<&'a str> {
+        self.item
+            .and_then(|item| item.get(name))
+            .or_else(|| {
+                self.fallback
+                    .iter()
+                    .find(|(key, _)| key == name)
+                    .map(|(_, value)| value)
+            })
+            .map(String::as_str)
+    }
+}
+
+/// Reserved color name for the sidebar panel background.
+const PANEL_COLOR: &str = "$panel";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarTokenColor {
     Rgb {
@@ -84,6 +116,8 @@ pub enum SidebarTokenColor {
     },
     /// Color taken from the value of a user token of the current item.
     Token(SidebarColorTokenName),
+    /// Background of the sidebar panel in the current theme (`$panel`).
+    Panel,
 }
 
 impl SidebarTokenColor {
@@ -106,21 +140,22 @@ impl SidebarTokenColor {
 
     /// Replaces a token reference with the color in the token's value; a
     /// missing, empty or non-color value yields `None`.
-    pub(crate) fn resolve(
-        self,
-        tokens: &std::collections::HashMap<String, String>,
-    ) -> Option<Self> {
+    pub(crate) fn resolve(self, tokens: ColorTokens<'_>) -> Option<Self> {
         match self {
-            Self::Rgb { .. } => Some(self),
-            Self::Token(name) => tokens
-                .get(name.as_str())
-                .and_then(|value| Self::parse_hex(value)),
+            Self::Rgb { .. } | Self::Panel => Some(self),
+            Self::Token(name) => tokens.get(name.as_str()).and_then(Self::parse_hex),
         }
     }
 
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
+        self.ratatui_with_panel(ratatui::style::Color::Reset)
+    }
+
+    /// Terminal color with `$panel` replaced by `panel`.
+    pub(crate) fn ratatui_with_panel(self, panel: ratatui::style::Color) -> ratatui::style::Color {
         match self {
             Self::Rgb { r, g, b } => ratatui::style::Color::Rgb(r, g, b),
+            Self::Panel => panel,
             // Unresolved references are dropped before rendering.
             Self::Token(_) => ratatui::style::Color::Reset,
         }
@@ -135,6 +170,7 @@ impl Serialize for SidebarTokenColor {
         match self {
             Self::Rgb { r, g, b } => serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}")),
             Self::Token(name) => serializer.serialize_str(&format!("${}", name.as_str())),
+            Self::Panel => serializer.serialize_str(PANEL_COLOR),
         }
     }
 }
@@ -145,17 +181,20 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
+        if value == PANEL_COLOR {
+            return Ok(Self::Panel);
+        }
         if let Some(name) = value.strip_prefix('$') {
             return SidebarColorTokenName::new(name)
                 .map(Self::Token)
                 .ok_or_else(|| {
                     serde::de::Error::custom(format!(
-                        "invalid custom sidebar token `{value}` in fg"
+                        "invalid custom sidebar token `{value}` in color"
                     ))
                 });
         }
         Self::parse_hex(&value).ok_or_else(|| {
-            serde::de::Error::custom("sidebar token fg must be #RGB, #RRGGBB or $token")
+            serde::de::Error::custom("sidebar token color must be #RGB, #RRGGBB, $panel or $token")
         })
     }
 }
@@ -163,15 +202,18 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SidebarTokenStyle {
     pub fg: Option<SidebarTokenColor>,
+    /// Background of the token; the first token with one fills its whole row.
+    pub bg: Option<SidebarTokenColor>,
     pub bold: Option<bool>,
     pub dim: Option<bool>,
 }
 
 impl SidebarTokenStyle {
-    /// Resolves a token-reference `fg` against the current item's tokens.
-    pub(crate) fn resolved(self, tokens: &std::collections::HashMap<String, String>) -> Self {
+    /// Resolves token-reference colors against the current item's tokens.
+    pub(crate) fn resolved(self, tokens: ColorTokens<'_>) -> Self {
         Self {
             fg: self.fg.and_then(|fg| fg.resolve(tokens)),
+            bg: self.bg.and_then(|bg| bg.resolve(tokens)),
             ..self
         }
     }
@@ -222,14 +264,17 @@ pub enum SpaceSidebarToken {
 }
 
 impl AgentSidebarToken {
+    /// Style of the token for `value`; `active` is whether the tab shown by the
+    /// token is active in its workspace (`None` for tokens that show no tab).
     pub(crate) fn style_for_value(
         &self,
         value: &str,
-        tokens: &std::collections::HashMap<String, String>,
+        tokens: ColorTokens<'_>,
+        active: Option<bool>,
     ) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => {
-                rules::matching_style(rules, *style, value, tokens)
+                rules::matching_style(rules, *style, value, tokens, active)
             }
             _ => Some(SidebarTokenStyle::default()),
         }
@@ -244,14 +289,17 @@ impl AgentSidebarToken {
 }
 
 impl SpaceSidebarToken {
+    /// Style of the token for `value`; `active` is whether the tab shown by the
+    /// token is active in its workspace (`None` for tokens that show no tab).
     pub(crate) fn style_for_value(
         &self,
         value: &str,
-        tokens: &std::collections::HashMap<String, String>,
+        tokens: ColorTokens<'_>,
+        active: Option<bool>,
     ) -> Option<SidebarTokenStyle> {
         match self {
             Self::Styled { style, rules, .. } => {
-                rules::matching_style(rules, *style, value, tokens)
+                rules::matching_style(rules, *style, value, tokens, active)
             }
             _ => Some(SidebarTokenStyle::default()),
         }
@@ -271,6 +319,8 @@ struct RawStyledSidebarToken {
     token: String,
     #[serde(default)]
     fg: Option<SidebarTokenColor>,
+    #[serde(default)]
+    bg: Option<SidebarTokenColor>,
     #[serde(default)]
     bold: Option<bool>,
     #[serde(default)]
@@ -303,6 +353,7 @@ impl RawSidebarToken {
                     token.token,
                     Some(SidebarTokenStyle {
                         fg: token.fg,
+                        bg: token.bg,
                         bold: token.bold,
                         dim: token.dim,
                     }),
@@ -345,6 +396,9 @@ where
     map.serialize_entry("token", &name)?;
     if let Some(fg) = style.fg {
         map.serialize_entry("fg", &fg)?;
+    }
+    if let Some(bg) = style.bg {
+        map.serialize_entry("bg", &bg)?;
     }
     if let Some(bold) = style.bold {
         map.serialize_entry("bold", &bold)?;
@@ -748,14 +802,14 @@ rows = [["state_icon", "tab"], ["focused_tab"], [{ token = "focused_tab", fg = "
         );
         assert_eq!(
             token
-                .style_for_value("logs", &Default::default())
+                .style_for_value("logs", ColorTokens::default(), None)
                 .and_then(|style| style.fg)
                 .map(SidebarTokenColor::ratatui),
             Some(ratatui::style::Color::Rgb(0xff, 0x00, 0x00))
         );
         assert_eq!(
             token
-                .style_for_value("build", &Default::default())
+                .style_for_value("build", ColorTokens::default(), None)
                 .and_then(|style| style.fg),
             style.fg
         );
@@ -907,6 +961,59 @@ rows = [[{ token = "workspace", fg = "$color", rules = [{ contains = "x", fg = "
             assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{fg}");
             let rule = format!("[spaces]\nrows = [[{{ token = \"workspace\", rules = [{{ equals = \"a\", fg = \"{fg}\" }}] }}]]\n");
             assert!(toml::from_str::<SidebarConfig>(&rule).is_err(), "{fg}");
+        }
+    }
+
+    #[test]
+    fn bg_and_panel_color_parse_and_round_trip() {
+        let config: SidebarConfig = toml::from_str(
+            r##"
+[agents]
+rows = [["state_icon", { token = "tab", fg = "$panel", bg = "$color", rules = [{ active = true, fg = "$color", bg = "$panel" }] }]]
+[spaces]
+rows = [[{ token = "workspace", bg = "#123" }, { token = "branch", fg = "#010203", bg = "#a0b0c0" }]]
+"##,
+        )
+        .unwrap();
+        let (_, style) = config.agents.rows[0][1].parts();
+        assert_eq!(style.fg, Some(SidebarTokenColor::Panel));
+        assert!(matches!(style.bg, Some(SidebarTokenColor::Token(_))));
+        let (_, style) = config.spaces.rows[0][0].parts();
+        assert_eq!(
+            style.bg,
+            Some(SidebarTokenColor::Rgb {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            })
+        );
+        let encoded = toml::to_string(&config).unwrap();
+        assert!(encoded.contains(r#"fg = "$panel""#));
+        assert!(encoded.contains(r#"bg = "$color""#));
+        assert!(encoded.contains(r#"bg = "$panel""#));
+        assert!(encoded.contains("active = true"));
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+    }
+
+    #[test]
+    fn panel_color_resolves_to_the_given_panel_color() {
+        use ratatui::style::Color;
+        let panel = SidebarTokenColor::Panel;
+        assert_eq!(panel.resolve(ColorTokens::default()), Some(panel));
+        assert_eq!(
+            panel.ratatui_with_panel(Color::Rgb(1, 2, 3)),
+            Color::Rgb(1, 2, 3)
+        );
+    }
+
+    #[test]
+    fn bg_rejects_invalid_values() {
+        for bg in ["$", "$bad.name", "red", "#abcd", "panel"] {
+            let input =
+                format!("[spaces]\nrows = [[{{ token = \"workspace\", bg = \"{bg}\" }}]]\n");
+            assert!(toml::from_str::<SidebarConfig>(&input).is_err(), "{bg}");
+            let rule = format!("[spaces]\nrows = [[{{ token = \"workspace\", rules = [{{ equals = \"a\", bg = \"{bg}\" }}] }}]]\n");
+            assert!(toml::from_str::<SidebarConfig>(&rule).is_err(), "{bg}");
         }
     }
 }

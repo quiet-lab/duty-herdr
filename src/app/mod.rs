@@ -2111,7 +2111,7 @@ mod tests {
         );
         assert_eq!(
             app.state.sidebar_agents.rows[0][0]
-                .style_for_value("90", &Default::default())
+                .style_for_value("90", crate::config::ColorTokens::default(), None)
                 .unwrap()
                 .bold,
             Some(true)

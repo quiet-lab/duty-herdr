@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{SidebarTokenColor, SidebarTokenStyle};
+use super::{ColorTokens, SidebarTokenColor, SidebarTokenStyle};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawRule", into = "RawRule")]
@@ -21,6 +21,8 @@ enum Condition {
     StartsWith(String),
     GreaterThan(f64),
     LessThan(f64),
+    /// The tab shown by the token is (or is not) active in its workspace.
+    Active(bool),
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -37,9 +39,13 @@ struct RawRule {
     #[serde(skip_serializing_if = "Option::is_none")]
     lt: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    active: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     ignore_case: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fg: Option<SidebarTokenColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bg: Option<SidebarTokenColor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bold: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -58,13 +64,15 @@ impl TryFrom<RawRule> for SidebarTokenRule {
             raw.starts_with.is_some(),
             raw.gt.is_some(),
             raw.lt.is_some(),
+            raw.active.is_some(),
         ]
         .into_iter()
         .filter(|present| *present)
         .count();
         if count != 1 {
             return Err(
-                "sidebar rule requires exactly one of equals, contains, starts_with, gt, lt".into(),
+                "sidebar rule requires exactly one of equals, contains, starts_with, gt, lt, active"
+                    .into(),
             );
         }
         let condition = if let Some(value) = raw.equals {
@@ -73,6 +81,11 @@ impl TryFrom<RawRule> for SidebarTokenRule {
             Condition::Contains(value)
         } else if let Some(value) = raw.starts_with {
             Condition::StartsWith(value)
+        } else if let Some(active) = raw.active {
+            if raw.ignore_case.is_some() {
+                return Err("ignore_case applies only to sidebar text conditions".into());
+            }
+            Condition::Active(active)
         } else {
             let (value, greater) = match (raw.gt, raw.lt) {
                 (Some(value), _) => (value, true),
@@ -97,6 +110,7 @@ impl TryFrom<RawRule> for SidebarTokenRule {
             hide: raw.hide,
             style: SidebarTokenStyle {
                 fg: raw.fg,
+                bg: raw.bg,
                 bold: raw.bold,
                 dim: raw.dim,
             },
@@ -109,6 +123,7 @@ impl From<SidebarTokenRule> for RawRule {
         let mut raw = Self {
             ignore_case: rule.ignore_case.then_some(true),
             fg: rule.style.fg,
+            bg: rule.style.bg,
             bold: rule.style.bold,
             dim: rule.style.dim,
             hide: rule.hide,
@@ -120,14 +135,21 @@ impl From<SidebarTokenRule> for RawRule {
             Condition::StartsWith(value) => raw.starts_with = Some(value),
             Condition::GreaterThan(value) => raw.gt = Some(value),
             Condition::LessThan(value) => raw.lt = Some(value),
+            Condition::Active(value) => raw.active = Some(value),
         }
         raw
     }
 }
 
 impl SidebarTokenRule {
-    fn matches(&self, value: &str, numeric: &mut Option<Option<f64>>) -> bool {
+    fn matches(
+        &self,
+        value: &str,
+        numeric: &mut Option<Option<f64>>,
+        active: Option<bool>,
+    ) -> bool {
         match &self.condition {
+            Condition::Active(expected) => active == Some(*expected),
             Condition::Equals(expected) => {
                 if self.ignore_case {
                     value.eq_ignore_ascii_case(expected)
@@ -176,17 +198,19 @@ pub(super) fn matching_style(
     rules: &[SidebarTokenRule],
     base: SidebarTokenStyle,
     value: &str,
-    tokens: &std::collections::HashMap<String, String>,
+    tokens: ColorTokens<'_>,
+    active: Option<bool>,
 ) -> Option<SidebarTokenStyle> {
     let base = base.resolved(tokens);
     let mut numeric = None;
     for rule in rules {
-        if rule.matches(value, &mut numeric) {
+        if rule.matches(value, &mut numeric, active) {
             if rule.hide == Some(true) {
                 return None;
             }
             return Some(SidebarTokenStyle {
                 fg: rule.style.fg.and_then(|fg| fg.resolve(tokens)).or(base.fg),
+                bg: rule.style.bg.and_then(|bg| bg.resolve(tokens)).or(base.bg),
                 bold: rule.style.bold.or(base.bold),
                 dim: rule.style.dim.or(base.dim),
             });
@@ -207,21 +231,21 @@ mod tests {
             ("starts_with = 'Local'", "Localhost", "myLocal"),
         ] {
             let rule: SidebarTokenRule = toml::from_str(condition).unwrap();
-            assert!(rule.matches(yes, &mut None));
-            assert!(!rule.matches(no, &mut None));
-            assert!(!rule.matches(&yes.to_ascii_lowercase(), &mut None));
+            assert!(rule.matches(yes, &mut None, None));
+            assert!(!rule.matches(no, &mut None, None));
+            assert!(!rule.matches(&yes.to_ascii_lowercase(), &mut None, None));
             let folded: SidebarTokenRule =
                 toml::from_str(&format!("{condition}\nignore_case = true")).unwrap();
-            assert!(folded.matches(&yes.to_ascii_lowercase(), &mut None));
+            assert!(folded.matches(&yes.to_ascii_lowercase(), &mut None, None));
         }
         for condition in ["equals", "contains", "starts_with"] {
             let rule: SidebarTokenRule =
                 toml::from_str(&format!("{condition} = 'ÉA'\nignore_case = true")).unwrap();
-            assert!(rule.matches("Éa", &mut None));
-            assert!(!rule.matches("éa", &mut None));
+            assert!(rule.matches("Éa", &mut None, None));
+            assert!(!rule.matches("éa", &mut None, None));
         }
         let empty: SidebarTokenRule = toml::from_str("contains = ''\nignore_case = true").unwrap();
-        assert!(empty.matches("", &mut None));
+        assert!(empty.matches("", &mut None, None));
     }
 
     #[test]
@@ -232,13 +256,69 @@ mod tests {
         ] {
             let rule: SidebarTokenRule = toml::from_str(condition).unwrap();
             for value in yes {
-                assert!(rule.matches(value, &mut None), "{condition}: {value}");
+                assert!(rule.matches(value, &mut None, None), "{condition}: {value}");
             }
             for value in [
                 no, "80", "90%", " 90", "90 ", "", "NaN", "inf", "-inf", "1e999",
             ] {
-                assert!(!rule.matches(value, &mut None), "{condition}: {value}");
+                assert!(
+                    !rule.matches(value, &mut None, None),
+                    "{condition}: {value}"
+                );
             }
         }
+    }
+
+    #[test]
+    fn active_condition_matches_only_tokens_that_show_a_tab() {
+        let active: SidebarTokenRule = toml::from_str("active = true").unwrap();
+        let inactive: SidebarTokenRule = toml::from_str("active = false").unwrap();
+        assert!(active.matches("x", &mut None, Some(true)));
+        assert!(!active.matches("x", &mut None, Some(false)));
+        assert!(inactive.matches("x", &mut None, Some(false)));
+        assert!(!inactive.matches("x", &mut None, Some(true)));
+        for rule in [&active, &inactive] {
+            assert!(!rule.matches("x", &mut None, None));
+        }
+        let encoded = toml::to_string(&active).unwrap();
+        assert_eq!(
+            toml::from_str::<SidebarTokenRule>(&encoded).unwrap(),
+            active
+        );
+    }
+
+    #[test]
+    fn active_condition_is_exclusive_and_takes_no_ignore_case() {
+        for input in [
+            "active = true\nequals = 'a'",
+            "active = false\ngt = 1",
+            "active = true\nignore_case = true",
+        ] {
+            assert!(
+                toml::from_str::<SidebarTokenRule>(input).is_err(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_merge_bg_and_hide_works_with_active() {
+        let rules: Vec<SidebarTokenRule> = vec![
+            toml::from_str("active = true\nbg = '$panel'").unwrap(),
+            toml::from_str("active = false\nhide = true").unwrap(),
+        ];
+        let base = SidebarTokenStyle {
+            bg: Some(SidebarTokenColor::Rgb { r: 1, g: 2, b: 3 }),
+            ..Default::default()
+        };
+        let tokens = ColorTokens::default();
+        assert_eq!(
+            matching_style(&rules, base, "x", tokens, Some(true))
+                .unwrap()
+                .bg,
+            Some(SidebarTokenColor::Panel)
+        );
+        assert_eq!(matching_style(&rules, base, "x", tokens, Some(false)), None);
+        assert_eq!(matching_style(&rules, base, "x", tokens, None), Some(base));
     }
 }
