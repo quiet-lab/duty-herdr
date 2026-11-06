@@ -17,12 +17,24 @@ import re
 import statistics
 import sys
 
-KEY_COLUMNS = ("count", "panes", "clients", "hidden_output", "pattern", "mode")
 TEST_PREFIX = re.compile(r"^test \S+ \.\.\. ")
+MEASURE_START = re.compile(r"[\d.]+ (?:ticks/s|us/frame|us/tick)")
+MEASURE_VALUE = re.compile(r"([\d.]+) us/(?:frame|tick)")
+MEDIAN = re.compile(r"median_(?:us|ns)=([\d.]+)")
+MEASURE_FIELDS = re.compile(r"(?:median|p95|max)_(?:us|ns)=[\d.]+")
+
+MEASURE_COLUMN = re.compile(r"_(?:us|ns|ms)$")
+
+Result = collections.namedtuple("Result", "rows only_base only_head")
 
 
 def parse_log(path):
-    """Строки таблиц bench -> {ключ: median_us или us/frame}."""
+    """Строки таблиц bench -> {ключ: median_us, median_ns или us/frame, us/tick}.
+
+    Строка таблицы — строка с тем же числом колонок, что и заголовок с
+    `median_us`; ключ строки — колонки левее `median_us`, кроме замеров (`*_us`, `*_ns`, `*_ms`); нечисловые входят.
+    Ключ остальных строк — описание без измеренных чисел.
+    """
     res = {}
     ctx = []
     hdr = None
@@ -35,23 +47,25 @@ def parse_log(path):
             if "median_us" in toks and not re.search(r"\d", toks[0]):
                 hdr = toks
                 continue
-            if hdr and re.fullmatch(r"\d+", toks[0]) and len(toks) == len(hdr):
+            if hdr and len(toks) == len(hdr):
                 mi = hdr.index("median_us")
-                keycols = [t for h, t in zip(hdr, toks) if h in KEY_COLUMNS]
-                res[" / ".join(ctx[-2:]) + " :: " + " ".join(keycols)] = float(toks[mi])
-                continue
-            m = re.search(r"median_us=([\d.]+)", s)
+                try:
+                    value = float(toks[mi])
+                except ValueError:
+                    value = None
+                if value is not None:
+                    res[" / ".join(ctx[-2:]) + " :: " + " ".join(t for h, t in zip(hdr[:mi], toks[:mi]) if not MEASURE_COLUMN.search(h))] = value
+                    continue
+            m = MEDIAN.search(s)
             if m:
-                key = re.sub(r"(median|p95)_us=[\d.]+|max_us=[\d.]+", "", TEST_PREFIX.sub("", s)).strip()
-                res[key] = float(m.group(1))
+                res[MEASURE_FIELDS.sub("", TEST_PREFIX.sub("", s)).strip()] = float(m.group(1))
                 continue
-            m = re.search(r"([\d.]+) us/(frame|tick)", s)
-            if m:
-                res[TEST_PREFIX.sub("", s.split(", ", 1)[0] + ", " + s.rsplit(",", 1)[0])] = float(m.group(1))
+            start = MEASURE_START.search(s)
+            value = MEASURE_VALUE.search(s)
+            if start and value:
+                res[TEST_PREFIX.sub("", s[:start.start()]).rstrip(" ,:")] = float(value.group(1))
                 continue
-            if not re.match(r"\s*\d", s):
-                hdr = None
-                ctx.append(TEST_PREFIX.sub("", s.strip()))
+            ctx.append(TEST_PREFIX.sub("", s.strip()))
     return res
 
 
@@ -64,30 +78,38 @@ def aggregate(directory, kind):
     return {k: min(v) for k, v in vals.items()}
 
 
-def compare_rows(base, head):
-    """[(строка, база, HEAD, Δ %)] по строкам, присутствующим в обоих."""
-    return [(k, base[k], head[k], (head[k] - base[k]) / base[k] * 100)
+def compare_dir(directory):
+    """Result: строки в обеих сторонах [(строка, база, HEAD, Δ %)] и ключи только с одной стороны."""
+    base, head = aggregate(directory, "base"), aggregate(directory, "head")
+    rows = [(k, base[k], head[k], (head[k] - base[k]) / base[k] * 100)
             for k in base if k in head and base[k] > 0]
+    return Result(rows, sorted(k for k in base if k not in head), sorted(k for k in head if k not in base))
 
 
-def variant_rows(directory):
-    return compare_rows(aggregate(directory, "base"), aggregate(directory, "head"))
+def side_lines(result):
+    out = []
+    for title, keys in (("только в базе", result.only_base), ("только в HEAD", result.only_head)):
+        out.append(f"{title}: {len(keys)}")
+        out += [f"  {k}" for k in keys]
+    return out
 
 
-def render_variant(rows, threshold):
+def render_variant(result, threshold):
+    rows = result.rows
     out = ["| строка | база | HEAD | Δ % |", "|---|---|---|---|"]
     out += [f"| {k} | {b:g} | {h:g} | {d:+.1f} |" for k, b, h, d in rows]
     over = [r for r in rows if r[3] > threshold]
     out.append("")
     out.append(f"строк: {len(rows)}, хуже порога {threshold:g} %: {len(over)}")
     out += [f"  {d:+.1f}  {k}" for k, _, _, d in over]
+    out += side_lines(result)
     return "\n".join(out) + "\n"
 
 
 def summarize(per_variant, threshold):
-    """per_variant: {вариант: rows}. Возвращает (текст, число устойчиво худших строк)."""
+    """per_variant: {вариант: Result}. Возвращает (текст, число устойчиво худших строк)."""
     variants = list(per_variant)
-    table = {v: {r[0]: r[3] for r in rows} for v, rows in per_variant.items()}
+    table = {v: {r[0]: r[3] for r in res.rows} for v, res in per_variant.items()}
     keys = [k for k in next(iter(table.values()), {}) if all(k in table[v] for v in variants)]
     lines = []
     stable = 0
@@ -95,13 +117,11 @@ def summarize(per_variant, threshold):
         ds = [table[v][k] for v in variants]
         med = statistics.median(ds)
         all_worse = all(d > threshold for d in ds)
-        signs_differ = min(ds) < 0 < max(ds) and max(ds) - min(ds) > threshold / 2
-        spread = max(ds) - min(ds) > threshold / 2
         marks = []
         if all_worse:
             marks.append("устойчиво хуже порога")
             stable += 1
-        if len(variants) > 1 and (signs_differ or spread) and not all_worse:
+        elif len(variants) > 1 and max(ds) - min(ds) > threshold / 2:
             marks.append("разброс сборок")
         lines.append((k, ds, med, marks))
     head = "| строка | " + " | ".join(f"Δ % {v}" for v in variants) + " | медиана Δ % | отметка |"
@@ -113,6 +133,10 @@ def summarize(per_variant, threshold):
     out.append(f"вариантов: {len(variants)}, строк: {len(lines)}, порог: {threshold:g} %, "
                f"показаны строки с отметкой или выше порога: {len(shown)}")
     out.append(f"устойчиво хуже порога: {stable}")
+    for v, res in per_variant.items():
+        if res.only_base or res.only_head:
+            out.append(f"вариант {v}: только в базе {len(res.only_base)}, только в HEAD {len(res.only_head)}")
+            out += side_lines(res)
     return "\n".join(out) + "\n", stable
 
 
@@ -128,9 +152,9 @@ def main(argv):
         p.add_argument("--threshold", type=float, default=10.0)
     a = ap.parse_args(argv)
     if a.mode == "variant":
-        sys.stdout.write(render_variant(variant_rows(a.directory), a.threshold))
+        sys.stdout.write(render_variant(compare_dir(a.directory), a.threshold))
         return 0
-    per_variant = {name: variant_rows(f"{a.directory}/{name}") for name in a.variants}
+    per_variant = {name: compare_dir(f"{a.directory}/{name}") for name in a.variants}
     text, stable = summarize(per_variant, a.threshold)
     sys.stdout.write(text)
     return 1 if stable else 0

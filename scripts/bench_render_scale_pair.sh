@@ -10,6 +10,8 @@
 # медиан. Вывод читается по <out>/summary.md.
 #
 # Переменные окружения:
+#   BENCH_PAIR_STAGE      all (сборки и замер), build (только сборки), measure
+#                         (только замер: worktree базы и сборки переиспользуются) (all)
 #   BENCH_PAIR_VARIANTS   варианты сборки через пробел (default "default cgu1 align")
 #   BENCH_PAIR_ROUNDS     число раундов (4)
 #   BENCH_PAIR_CPUS       два ядра разных CCX (одно для базы, другое для HEAD) ("4 8")
@@ -18,7 +20,14 @@
 #   CARGO_BUILD_JOBS      потоков сборки (8)
 #   ZIG                   путь к Zig 0.16.0 (по умолчанию установка mise)
 #
-# Код возврата: 0 — устойчиво хуже порога нет; 1 — есть; 2 и выше — ошибка.
+# Нагрузка проверяется перед сборками и перед замером; при высокой нагрузке
+# код возврата 3 (после собственных сборок loadavg ещё высок: повторите
+# с BENCH_PAIR_STAGE=measure).
+# Worktree базы остаётся в <out-dir>/base-tree и переиспользуется, пока он на
+# том же коммите (иначе сборки базы потеряли бы кэш из-за новых mtime).
+#
+# Код возврата: 0 — устойчиво хуже порога нет; 1 — есть; 3 — станция занята;
+# 2, 4 и выше — ошибка.
 set -euo pipefail
 
 if (($# < 1 || $# > 2)); then
@@ -50,6 +59,8 @@ rounds=${BENCH_PAIR_ROUNDS:-4}
 read -r cpu_a cpu_b <<<"${BENCH_PAIR_CPUS:-4 8}"
 max_load=${BENCH_PAIR_MAX_LOAD:-8}
 threshold=${BENCH_PAIR_THRESHOLD:-10}
+stage=${BENCH_PAIR_STAGE:-all}
+case $stage in all | build | measure) ;; *) echo "BENCH_PAIR_STAGE: all, build или measure, получено $stage" >&2; exit 2 ;; esac
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-8}
 
 export ZIG=${ZIG:-$HOME/.local/share/mise/installs/zig/0.16.0/zig}
@@ -61,11 +72,24 @@ fi
 
 compare=$root/scripts/bench_render_scale_compare.py
 base_tree=$out/base-tree
-cleanup() {
-  git -C "$root" worktree remove --force "$base_tree" 2>/dev/null || true
+base_full=$(git rev-parse "$base_sha^{commit}")
+creating=
+remove_base_tree() {
+  git -C "$root" worktree remove --force "$base_tree" 2>/dev/null || rm -rf "$base_tree"
   git -C "$root" worktree prune
 }
-trap cleanup EXIT
+# Worktree базы удаляется только при прерванном создании.
+trap '[[ -z $creating ]] || remove_base_tree' EXIT
+
+# Отказ при высокой нагрузке: loadavg за минуту ниже предела.
+check_load() {
+  local l1
+  l1=$(cut -d' ' -f1 /proc/loadavg)
+  awk -v l="$l1" -v m="$max_load" 'BEGIN{exit !(l < m)}' && return 0
+  echo "loadavg $l1 >= $max_load: станция занята, $1 не начат" >&2
+  echo "повторите с BENCH_PAIR_STAGE=measure, сборки переиспользуются" >&2
+  exit 3
+}
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 load() { cut -d' ' -f1-3 /proc/loadavg; }
@@ -77,9 +101,16 @@ else
   dirty=""
 fi
 
-cleanup
-log "этап 1 из 3: worktree базы $base_ref ($base_sha) в $base_tree"
-git worktree add --detach "$base_tree" "$base_sha" >/dev/null
+check_load "этап"
+if [[ -d $base_tree && $(git -C "$base_tree" rev-parse HEAD 2>/dev/null) == "$base_full" ]]; then
+  log "этап 1 из 3: worktree базы $base_ref ($base_sha) переиспользован: $base_tree"
+else
+  log "этап 1 из 3: worktree базы $base_ref ($base_sha) в $base_tree"
+  [[ ! -e $base_tree ]] || remove_base_tree
+  creating=1
+  git worktree add --detach "$base_tree" "$base_sha" >/dev/null
+  creating=
+fi
 
 # Сборка тестового бинарника в дереве $1, target-каталог $2, окружение варианта $3; печатает путь.
 build() {
@@ -114,9 +145,11 @@ for v in $variants; do
   exe_head[$i]=$(build "$root" "$out/target-$v-head" "$venv")
 done
 
-l1=$(cut -d' ' -f1 /proc/loadavg)
-awk -v l="$l1" -v m="$max_load" 'BEGIN{exit !(l < m)}' ||
-  { echo "loadavg $l1 >= $max_load, замер не начат: станция занята" >&2; exit 3; }
+if [[ $stage == build ]]; then
+  log "сборки готовы, замер: BENCH_PAIR_STAGE=measure"
+  exit 0
+fi
+check_load "замер"
 
 args=(render_scale_profile --ignored --nocapture --test-threads=1)
 i=0
@@ -131,9 +164,11 @@ for v in $variants; do
     pb=$!
     (cd "$root" && taskset -c "$ch" "${exe_head[$i]}" "${args[@]}" >"$vdir/head_r$r.log" 2>&1) &
     ph=$!
-    wait "$pb" "$ph" || true
-    grep -q 'test result: ok' "$vdir/base_r$r.log" "$vdir/head_r$r.log" ||
-      { echo "тест не прошёл: смотрите $vdir/*_r$r.log" >&2; exit 4; }
+    for side in base:"$pb" head:"$ph"; do
+      wait "${side#*:}" || { echo "тест упал (${side%%:*}, раунд $r): $vdir/${side%%:*}_r$r.log" >&2; exit 4; }
+      grep -q 'test result: ok' "$vdir/${side%%:*}_r$r.log" ||
+        { echo "тест не прошёл (${side%%:*}, раунд $r): $vdir/${side%%:*}_r$r.log" >&2; exit 4; }
+    done
   done
   python3 -I "$compare" variant "$vdir" --threshold "$threshold" >"$vdir/compare.md"
 done
