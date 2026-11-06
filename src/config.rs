@@ -37,7 +37,7 @@ pub use self::{
         SidebarTokenStyle, SpaceSidebarToken, SpacesSidebarConfig,
     },
     sound::SoundConfig,
-    tab_bar::TabBarRightEntryConfig,
+    tab_bar::{TabBarConfig, TabBarRightEntryConfig},
     theme::{parse_color, CustomThemeColors, ModeThemeColors, ThemeConfig, THEME_NAMES},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
     workspace_symbols::{WorkspaceColor, WorkspaceSymbol, WorkspaceSymbolsConfig},

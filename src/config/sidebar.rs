@@ -288,12 +288,17 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct SidebarTokenStyle {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fg: Option<SidebarTokenColor>,
     /// Background of the token; the first token with one fills its whole row.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bg: Option<SidebarTokenColor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bold: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dim: Option<bool>,
 }
 

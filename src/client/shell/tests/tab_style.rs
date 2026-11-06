@@ -272,3 +272,85 @@ fn fallback_color_yields_to_the_color_token() {
         assert_eq!(buffer[(x, rect.y)].bg, RED, "{x}");
     }
 }
+
+const TAB_BAR_COLORS: &str = r##"
+[ui.tab_bar]
+active = { fg = "$color|#ffffff", bg = "$panel" }
+inactive = { fg = "$panel", bg = "$color|#ffffff" }
+"##;
+
+/// Foreground and background of the first cell of the tab-strip tab `index`.
+fn tab_cell(
+    state: &ClientShellState,
+    buffer: &ratatui::buffer::Buffer,
+    index: usize,
+) -> (Color, Color, Rect) {
+    let rect = state.hits.tabs[index].0;
+    // The label is centered: the first column is padding with the tab style.
+    let cell = &buffer[(rect.x, rect.y)];
+    (cell.fg, cell.bg, rect)
+}
+
+#[test]
+fn tab_strip_keeps_theme_colors_without_tab_bar_config() {
+    let config: Config = toml::from_str("").expect("config");
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(false));
+    let palette = &state.config.palette;
+    let (fg, bg, _) = tab_cell(&state, &buffer, 0);
+    assert_eq!((fg, bg), (panel_contrast_fg(palette), palette.accent));
+    let (fg, bg, _) = tab_cell(&state, &buffer, 1);
+    assert_eq!((fg, bg), (palette.overlay0, palette.surface0));
+}
+
+#[test]
+fn tab_strip_takes_workspace_color_by_focus() {
+    let config: Config = toml::from_str(TAB_BAR_COLORS).expect("config");
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(false));
+    let panel = state.config.palette.panel_bg;
+    let (fg, bg, rect) = tab_cell(&state, &buffer, 0);
+    assert_eq!((fg, bg), (RED, panel));
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, panel, "{x}");
+    }
+    let (fg, bg, rect) = tab_cell(&state, &buffer, 1);
+    assert_eq!((fg, bg), (panel, RED));
+    for x in rect.x..rect.right() {
+        assert_eq!(buffer[(x, rect.y)].bg, RED, "{x}");
+    }
+    // Focus moves: the colors follow.
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(true));
+    assert_eq!(tab_cell(&state, &buffer, 0).0, panel);
+    assert_eq!(tab_cell(&state, &buffer, 0).1, RED);
+    assert_eq!(tab_cell(&state, &buffer, 1).1, panel);
+}
+
+#[test]
+fn tab_strip_uses_fallback_color_without_workspace_color_token() {
+    let config: Config = toml::from_str(TAB_BAR_COLORS).expect("config");
+    let mut projected = two_tab_snapshot(false);
+    projected.workspaces[0].tokens = vec![("symbol".into(), "@".into())];
+    let (state, buffer) = compose_buffer(&config, projected);
+    let white = Color::Rgb(255, 255, 255);
+    assert_eq!(tab_cell(&state, &buffer, 0).0, white);
+    assert_eq!(tab_cell(&state, &buffer, 1).1, white);
+}
+
+#[test]
+fn tab_strip_unset_fields_keep_theme_colors_and_modifiers_apply() {
+    let config: Config = toml::from_str(
+        r##"
+[ui.tab_bar]
+inactive = { bg = "#102030", bold = true }
+"##,
+    )
+    .expect("config");
+    let (state, buffer) = compose_buffer(&config, two_tab_snapshot(false));
+    let palette = &state.config.palette;
+    let (fg, bg, rect) = tab_cell(&state, &buffer, 1);
+    assert_eq!((fg, bg), (palette.overlay0, Color::Rgb(16, 32, 48)));
+    assert!(buffer[(rect.x, rect.y)]
+        .modifier
+        .contains(ratatui::style::Modifier::BOLD));
+    let (fg, bg, _) = tab_cell(&state, &buffer, 0);
+    assert_eq!((fg, bg), (panel_contrast_fg(palette), palette.accent));
+}
