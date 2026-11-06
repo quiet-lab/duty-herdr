@@ -190,8 +190,7 @@ fn tab_bar_labels_follow_the_shared_rule() {
     assert!(rows[0].contains("main"), "{}", rows[0]);
 }
 
-#[test]
-fn agent_panel_tab_token_follows_the_shared_rule() {
+fn agent_tab_tokens(projected: &ClientShellSnapshot) -> Vec<String> {
     let config: Config = toml::from_str(
         r#"
 [ui.sidebar.agents]
@@ -199,16 +198,120 @@ rows = [["state_icon", "tab"]]
 "#,
     )
     .expect("config");
-    let mut projected = labelled_snapshot();
+    let shell_config = ClientShellConfig::from_config(&config);
+    let labels = super::super::labels::SnapshotLabels::new(projected);
+    super::super::agent_sidebar::agent_rows(
+        super::super::labels::LabeledSnapshot::new(projected, Some(&labels)),
+        &shell_config,
+        None,
+    )
+    .into_iter()
+    .flat_map(|row| row.rows.into_iter().flatten())
+    .filter_map(|token| match token.kind {
+        crate::ui::ResolvedTokenKind::Tab(label) => Some(label),
+        _ => None,
+    })
+    .collect()
+}
+
+#[test]
+fn agent_panel_tab_token_follows_the_shared_rule() {
+    let mut projected = with_second_tab(labelled_snapshot(), false);
     projected.tabs[0].agent_label = Some("opus".into());
     projected.agents.push(agent("tab_1", "opus"));
-    let (_, rows) = compose_text(&config, projected.clone());
-    line_with(&rows, "@ herdr · opus");
+    assert_eq!(agent_tab_tokens(&projected), vec!["@ herdr · opus"]);
 
     projected.tabs[0].label = "review".into();
     projected.tabs[0].custom_label = true;
-    let (_, rows) = compose_text(&config, projected);
-    line_with(&rows, "review");
+    assert_eq!(agent_tab_tokens(&projected), vec!["review"]);
+}
+
+#[test]
+fn lone_tab_without_manual_label_shows_no_tab_token() {
+    let mut projected = labelled_snapshot();
+    projected.tabs[0].agent_label = Some("opus".into());
+    projected.agents.push(agent("tab_1", "opus"));
+    assert!(agent_tab_tokens(&projected).is_empty());
+
+    // Navigator: the lone pane row names its workspace, not the tab.
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected.clone()));
+    state.open_navigator_overlay();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("expected navigator");
+    };
+    let found =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let pane = found
+        .iter()
+        .find(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+        .expect("pane row");
+    assert_eq!(pane.label, "mine");
+
+    // Mobile switcher: neither the agent detail nor the tab list repeats the
+    // workspace through the lone tab's automatic label.
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected.clone()));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Navigate;
+    let rows = frame_rows(&state.compose(44, 20).expect("mobile switcher"));
+    let switcher = rows[2..].join("\n");
+    assert!(!switcher.contains("@ herdr · opus"), "{switcher}");
+    assert!(switcher.contains("tab 1"), "{switcher}");
+
+    // A manual label on the lone tab is still shown.
+    projected.tabs[0].label = "review".into();
+    projected.tabs[0].custom_label = true;
+    assert_eq!(agent_tab_tokens(&projected), vec!["review"]);
+}
+
+#[test]
+fn snapshot_labels_index_matches_scanning_the_snapshot() {
+    let mut projected = with_second_tab(labelled_snapshot(), true);
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.active_tab_id = "tab_3".into();
+    other.tokens = vec![("symbol".into(), "%".into())];
+    projected.workspaces.push(other);
+    let mut third = projected.tabs[0].clone();
+    third.tab_id = "tab_3".into();
+    third.workspace_id = "ws_2".into();
+    third.agent_label = Some("opus".into());
+    projected.tabs.push(third);
+    let labels = super::super::labels::SnapshotLabels::new(&projected);
+    let indexed = super::super::labels::LabeledSnapshot::new(&projected, Some(&labels));
+    let scanned = super::super::labels::LabeledSnapshot::new(&projected, None);
+    for workspace in 0..projected.workspaces.len() {
+        assert_eq!(indexed.tab_count(workspace), scanned.tab_count(workspace));
+        assert_eq!(
+            indexed.active_later_tab(workspace),
+            scanned.active_later_tab(workspace)
+        );
+        assert_eq!(
+            indexed.workspace_facts(workspace),
+            scanned.workspace_facts(workspace)
+        );
+        assert_eq!(
+            indexed.workspace_label(workspace, "x"),
+            scanned.workspace_label(workspace, "x")
+        );
+    }
+    for tab in 0..projected.tabs.len() {
+        assert_eq!(indexed.tab_label(tab), scanned.tab_label(tab));
+    }
+    assert_eq!(indexed.active_later_tab(0), Some(1));
+    assert_eq!(indexed.tab_label(1), "@ ~/notes · htop");
+    assert_eq!(indexed.workspace_label(1, "x"), "mine");
+    assert_eq!(indexed.tab_label(2), "% herdr · opus");
+
+    // Labels of another revision are not used.
+    let mut next = projected.clone();
+    next.revision += 1;
+    next.tabs[1].foreground_process = Some("btop".into());
+    assert_eq!(
+        super::super::labels::LabeledSnapshot::new(&next, Some(&labels)).tab_label(1),
+        "@ ~/notes · btop"
+    );
 }
 
 #[test]

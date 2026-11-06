@@ -157,7 +157,7 @@ fn agent_rows(
                     .iter()
                     .filter_map(|agent| {
                         super::agent_sidebar::agent_row(
-                            snapshot,
+                            super::labels::LabeledSnapshot::new(snapshot, Some(&endpoint.labels)),
                             &agent.pane_id,
                             config,
                             Some(&endpoint.label),

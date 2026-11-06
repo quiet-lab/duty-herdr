@@ -59,12 +59,12 @@ impl<'a> LabelFacts<'a> {
 pub(crate) fn display_label<'a>(
     manual: Option<&'a str>,
     agent_alive: bool,
-    auto: Option<String>,
+    auto: Option<Cow<'a, str>>,
     fallback: &'a str,
 ) -> Cow<'a, str> {
     match (manual, auto) {
         (Some(manual), _) if agent_alive => Cow::Borrowed(manual),
-        (_, Some(auto)) => Cow::Owned(auto),
+        (_, Some(auto)) => auto,
         (_, None) => Cow::Borrowed(fallback),
     }
 }

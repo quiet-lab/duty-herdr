@@ -14,6 +14,8 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) label: String,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Label index of `snapshot`, rebuilt whenever `snapshot` is replaced.
+    pub(crate) labels: super::labels::SnapshotLabels,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<String, u64>,
@@ -74,6 +76,9 @@ impl ClientShellState {
                     |endpoint| endpoint.status,
                 ),
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
+                labels: previous
+                    .map(|endpoint| endpoint.labels.clone())
+                    .unwrap_or_default(),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
                 agent_recency: previous
                     .map(|endpoint| endpoint.agent_recency.clone())
@@ -126,6 +131,7 @@ impl ClientShellState {
         {
             endpoint.status = ClientEndpointStatus::Disabled;
             endpoint.snapshot = None;
+            endpoint.labels = Default::default();
             endpoint.snapshot_generation = None;
             endpoint.methods = None;
             endpoint.agent_recency.clear();
@@ -621,6 +627,7 @@ impl ClientShellState {
         let endpoint = &mut self.endpoints[index];
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
+        endpoint.labels = super::labels::SnapshotLabels::new(&snapshot);
         endpoint.snapshot = Some(snapshot);
         let pending_matches =
             endpoint
@@ -743,6 +750,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         label: "Local".into(),
         status: ClientEndpointStatus::Online,
         snapshot: None,
+        labels: Default::default(),
         snapshot_generation: None,
         agent_recency: HashMap::new(),
         agent_presentation: Default::default(),

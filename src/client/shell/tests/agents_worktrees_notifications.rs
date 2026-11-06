@@ -2092,7 +2092,11 @@ fn agent_sidebar_focused_tab_follows_the_selected_tab_of_the_agent_workspace() {
         let mut projected = projected.clone();
         projected.workspaces[0].active_tab_id = active_tab_id.into();
 
-        let rows = super::super::agent_sidebar::agent_rows(&projected, &shell_config, None);
+        let rows = super::super::agent_sidebar::agent_rows(
+            super::super::labels::LabeledSnapshot::new(&projected, None),
+            &shell_config,
+            None,
+        );
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].rows[1][0].kind,

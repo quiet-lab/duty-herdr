@@ -1124,6 +1124,48 @@ impl Workspace {
         }
     }
 
+    /// Facts of the automatic label of tab `tab_index`; the single rule
+    /// behind the outer window title and the client snapshot. The agent is
+    /// the one of the focused pane, otherwise of the first other agent pane in
+    /// layout order: its reported `display_agent`, otherwise its effective
+    /// agent label. The place is [`Self::place_label`] for the first tab and
+    /// the root pane's admitted cwd for later tabs. The foreground process is
+    /// the focused pane's. Reads only cached state of this one tab.
+    pub(crate) fn tab_label_facts<'a>(
+        &'a self,
+        tab_index: usize,
+        terminals: &'a HashMap<TerminalId, TerminalState>,
+    ) -> Option<TabLabelFacts<'a>> {
+        let tab = self.tabs.get(tab_index)?;
+        let terminal_of = |pane_id| {
+            tab.terminal_id(pane_id)
+                .and_then(|terminal_id| terminals.get(terminal_id))
+        };
+        let focused = tab.layout.focused();
+        let focused_terminal = terminal_of(focused);
+        let agent = focused_terminal.and_then(tab_agent_label).or_else(|| {
+            if tab.layout.pane_count() < 2 {
+                return None;
+            }
+            tab.layout
+                .pane_ids()
+                .into_iter()
+                .filter(|pane_id| *pane_id != focused)
+                .find_map(|pane_id| terminal_of(pane_id).and_then(tab_agent_label))
+        });
+        let place = if tab_index == 0 {
+            Some(self.place_label())
+        } else {
+            terminal_of(tab.root_pane).map(|terminal| self.place_label_for(&terminal.cwd))
+        };
+        Some(TabLabelFacts {
+            place,
+            agent,
+            foreground_process: focused_terminal
+                .and_then(|terminal| terminal.foreground_process.as_deref()),
+        })
+    }
+
     pub fn branch(&self) -> Option<String> {
         self.cached_git_branch.clone()
     }
@@ -1492,6 +1534,27 @@ impl Workspace {
             max_pane_number
         );
     }
+}
+
+/// Facts of a tab's automatic label, see [`Workspace::tab_label_facts`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TabLabelFacts<'a> {
+    pub(crate) place: Option<String>,
+    /// Detected agent of the tab; `Some` exactly while an agent is alive.
+    pub(crate) agent: Option<String>,
+    pub(crate) foreground_process: Option<&'a str>,
+}
+
+/// Agent label of an agent terminal: its reported `display_agent`, otherwise
+/// its effective agent label; `None` for a plain terminal.
+fn tab_agent_label(terminal: &TerminalState) -> Option<String> {
+    if !terminal.is_agent_terminal() {
+        return None;
+    }
+    terminal
+        .effective_display_agent()
+        .or_else(|| terminal.effective_agent_label().map(str::to_owned))
+        .filter(|label| !label.is_empty())
 }
 
 #[cfg(test)]

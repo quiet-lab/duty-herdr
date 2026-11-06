@@ -44,15 +44,45 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
 
 /// `path` with the home directory written as `~`, for place labels outside Git.
 pub(crate) fn tilde_path(path: &Path) -> String {
-    tilde_path_with_home(path, std::env::var_os("HOME").as_deref().map(Path::new))
+    tilde_path_with_home(path, crate::worktree::home_dir())
 }
 
+/// Runs on every snapshot and title, so the common case of a normalized
+/// UTF-8 path compares strings; anything else takes `Path::strip_prefix`.
 pub(crate) fn tilde_path_with_home(path: &Path, home: Option<&Path>) -> String {
-    match home.and_then(|home| path.strip_prefix(home).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
+    let Some(home) = home else {
+        return path.to_string_lossy().into_owned();
+    };
+    if let Some(rest) = normalized_str_suffix(path, home) {
+        return tilde_label(rest);
     }
+    match path.strip_prefix(home) {
+        Ok(rest) => tilde_label(&rest.to_string_lossy()),
+        Err(_) => path.to_string_lossy().into_owned(),
+    }
+}
+
+/// The part of `path` after `home` when both are UTF-8 and the rest consists
+/// of plain components, so the string split matches `Path::strip_prefix`.
+fn normalized_str_suffix<'a>(path: &'a Path, home: &Path) -> Option<&'a str> {
+    let rest = path.to_str()?.strip_prefix(home.to_str()?)?;
+    if rest.is_empty() {
+        return Some(rest);
+    }
+    let rest = rest.strip_prefix(std::path::is_separator)?;
+    rest.split(std::path::is_separator)
+        .all(|component| !component.is_empty() && component != "." && component != "..")
+        .then_some(rest)
+}
+
+fn tilde_label(rest: &str) -> String {
+    if rest.is_empty() {
+        return "~".to_owned();
+    }
+    let mut label = String::with_capacity(rest.len() + 2);
+    label.push_str("~/");
+    label.push_str(rest);
+    label
 }
 
 pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
@@ -403,6 +433,16 @@ mod tests {
         assert_eq!(
             tilde_path_with_home(Path::new("/srv/data"), None),
             "/srv/data"
+        );
+        // Paths the string comparison cannot split take the component path.
+        let unusual = Path::new("/home/user//work/./notes/");
+        assert_eq!(
+            tilde_path_with_home(unusual, Some(home)),
+            format!("~/{}", unusual.strip_prefix(home).unwrap().display())
+        );
+        assert_eq!(
+            tilde_path_with_home(Path::new("/home/user/x"), Some(Path::new("/home/user/"))),
+            "~/x"
         );
     }
 

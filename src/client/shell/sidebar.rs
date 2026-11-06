@@ -237,6 +237,11 @@ pub(crate) fn render_sidebar(
     );
 
     let entries = workspace_entries(snapshot, state.collapsed_groups);
+    let labeled = super::labels::LabeledSnapshot::of_endpoint(
+        snapshot,
+        state.endpoints,
+        state.active_endpoint_id,
+    );
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -254,8 +259,8 @@ pub(crate) fn render_sidebar(
                 .get(entry.index)
                 .map(|workspace| {
                     workspace_rows(
-                        snapshot,
-                        workspace,
+                        labeled,
+                        entry.index,
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
                         entry.indented,
                         &config.spaces,
@@ -313,7 +318,7 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(snapshot, workspace, status, entry.indented, &config.spaces);
+        let rows = workspace_rows(labeled, entry.index, status, entry.indented, &config.spaces);
         let row_height = rows.height().min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -447,7 +452,7 @@ pub(crate) fn render_sidebar(
     super::render_agent_panel(
         buffer,
         detail_area,
-        snapshot,
+        labeled,
         config,
         state.agent_scroll,
         hits,
@@ -771,12 +776,18 @@ impl WorkspaceRows {
 }
 
 pub(in crate::client::shell) fn workspace_rows(
-    snapshot: &ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
+    labeled: super::labels::LabeledSnapshot<'_>,
+    workspace_index: usize,
     status: crate::api::schema::AgentStatus,
     indented: bool,
     config: &SpacesSidebarConfig,
 ) -> WorkspaceRows {
+    let Some(workspace) = labeled.snapshot.workspaces.get(workspace_index) else {
+        return WorkspaceRows {
+            rows: Vec::new(),
+            tab_row: None,
+        };
+    };
     let fallback = if indented && !workspace.custom_label {
         workspace
             .branch
@@ -786,27 +797,28 @@ pub(in crate::client::shell) fn workspace_rows(
     } else {
         &workspace.label
     };
-    let first = super::labels::first_tab(snapshot, workspace);
-    let label = super::labels::WorkspaceLabel::new(workspace, first);
+    let facts = labeled.workspace_facts(workspace_index);
+    let auto_label = labeled.workspace_auto_label(workspace_index);
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
     let mut rows = crate::ui::sidebar_space_rows(
         config,
         crate::ui::SpaceTokenContext {
-            workspace: &label.display(workspace, fallback),
+            workspace: &labeled.workspace_label(workspace_index, fallback),
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
             ahead_behind: workspace.git_ahead_behind,
             tokens: &token_values,
             suppress_git_details: indented,
-            symbol: label.facts.symbol,
-            place: label.facts.place,
-            app: label.facts.app,
-            auto_label: label.auto_label.as_deref(),
+            symbol: facts.symbol,
+            place: facts.place,
+            app: facts.app,
+            auto_label: auto_label.as_deref(),
         },
     );
-    let tab_row = super::labels::active_later_tab(snapshot, workspace, first)
-        .filter(|tab| super::labels::tab_has_facts(tab))
-        .map(|tab| {
+    let tab_row = labeled
+        .active_later_tab(workspace_index)
+        .filter(|&tab_index| super::labels::tab_has_facts(&labeled.snapshot.tabs[tab_index]))
+        .map(|tab_index| {
             let style = rows
                 .first()
                 .and_then(|row| {
@@ -821,7 +833,7 @@ pub(in crate::client::shell) fn workspace_rows(
                 index,
                 vec![crate::ui::ResolvedToken {
                     kind: crate::ui::ResolvedTokenKind::Workspace(
-                        super::labels::tab_label(label.facts.symbol, tab).into_owned(),
+                        labeled.tab_label(tab_index).into_owned(),
                     ),
                     style,
                 }],

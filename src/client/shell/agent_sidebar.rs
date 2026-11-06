@@ -53,11 +53,12 @@ pub(super) fn ordered_agent_pane_ids(
 pub(super) fn render_agent_panel(
     buffer: &mut Buffer,
     area: Rect,
-    snapshot: &ClientShellSnapshot,
+    labeled: super::labels::LabeledSnapshot<'_>,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
 ) {
+    let snapshot = labeled.snapshot;
     if !render_agent_panel_header(
         buffer,
         area,
@@ -68,7 +69,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(labeled, config, None);
     render_agent_list(
         buffer,
         area,
@@ -236,44 +237,44 @@ pub(super) fn render_agent_list<T>(
 }
 
 pub(super) fn agent_rows(
-    snapshot: &ClientShellSnapshot,
+    labeled: super::labels::LabeledSnapshot<'_>,
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    ordered_agent_pane_ids(labeled.snapshot, config.agent_panel_sort)
         .into_iter()
-        .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
+        .filter_map(|pane_id| agent_row(labeled, &pane_id, config, machine))
         .collect()
 }
 
 pub(super) fn agent_row(
-    snapshot: &ClientShellSnapshot,
+    labeled: super::labels::LabeledSnapshot<'_>,
     pane_id: &str,
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Option<AgentRow> {
+    let snapshot = labeled.snapshot;
     let agent = snapshot
         .agents
         .iter()
         .find(|agent| agent.pane_id == pane_id)?;
-    let workspace = snapshot
+    let workspace_index = snapshot
         .workspaces
         .iter()
-        .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
+        .position(|workspace| workspace.workspace_id == agent.workspace_id)?;
+    let workspace = &snapshot.workspaces[workspace_index];
+    let tab_index = snapshot
+        .tabs
+        .iter()
+        .position(|tab| tab.tab_id == agent.tab_id);
     let pane = snapshot
         .panes
         .iter()
         .find(|pane| pane.pane_id == agent.pane_id);
-    let tab_count = snapshot
-        .tabs
-        .iter()
-        .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-        .count();
-    let symbol = super::labels::workspace_symbol(workspace);
-    let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label || super::labels::tab_has_facts(tab))
-        .map(|tab| super::labels::tab_label(symbol, tab));
+    let tab_count = labeled.tab_count(workspace_index);
+    let tab_label = tab_index
+        .filter(|&index| super::labels::tab_token_shown(&snapshot.tabs[index], tab_count))
+        .map(|index| labeled.tab_label(index));
     let canonical_agent = agent
         .agent
         .as_deref()
@@ -296,8 +297,8 @@ pub(super) fn agent_row(
             snapshot
                 .tabs
                 .iter()
-                .find(|candidate| candidate.tab_id == workspace.active_tab_id)
-                .map(|tab| super::labels::tab_label(symbol, tab))
+                .position(|candidate| candidate.tab_id == workspace.active_tab_id)
+                .map(|index| labeled.tab_label(index))
         })
         .flatten();
     let agent_label = agent

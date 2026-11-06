@@ -7,7 +7,7 @@ const MIN_TAB_STRIP_WIDTH: u16 =
 pub(crate) fn render_tab_bar(
     buffer: &mut Buffer,
     area: Rect,
-    snapshot: &ClientShellSnapshot,
+    labeled: super::labels::LabeledSnapshot<'_>,
     config: &ClientShellConfig,
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
@@ -16,22 +16,20 @@ pub(crate) fn render_tab_bar(
 ) {
     let palette = &config.palette;
     buffer.set_style(area, Style::default().bg(palette.panel_bg));
-    let tabs = snapshot
+    let snapshot = labeled.snapshot;
+    let (tab_indices, tabs): (Vec<_>, Vec<_>) = snapshot
         .tabs
         .iter()
-        .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
-        .collect::<Vec<_>>();
-    let symbol = snapshot
-        .workspaces
-        .iter()
-        .find(|workspace| {
-            Some(workspace.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
+        .enumerate()
+        .filter(|(_, tab)| {
+            Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref()
         })
-        .and_then(super::labels::workspace_symbol);
+        .unzip();
     let desired_widths = tabs
         .iter()
-        .map(|tab| {
-            let label = tab_label(symbol, tab);
+        .zip(&tab_indices)
+        .map(|(tab, &tab_index)| {
+            let label = tab_label(labeled, tab_index, tab);
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
@@ -99,7 +97,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(symbol, tab);
+        let name = tab_label(labeled, tab_indices[index], tab);
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -378,12 +376,16 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     start
 }
 
-fn tab_label(symbol: Option<&str>, tab: &ClientShellTab) -> String {
-    let label = super::labels::tab_label(symbol, tab);
+fn tab_label<'a>(
+    labeled: super::labels::LabeledSnapshot<'a>,
+    tab_index: usize,
+    tab: &ClientShellTab,
+) -> std::borrow::Cow<'a, str> {
+    let label = labeled.tab_label(tab_index);
     if tab.zoomed {
-        format!("{label} Z")
+        std::borrow::Cow::Owned(format!("{label} Z"))
     } else {
-        label.into_owned()
+        label
     }
 }
 

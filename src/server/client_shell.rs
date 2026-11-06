@@ -102,13 +102,15 @@ pub(super) fn snapshot_with_completions(
     let tabs = snapshot
         .tabs
         .into_iter()
-        .zip(
-            app.state
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.tabs.iter()),
-        )
-        .map(|(tab, state)| {
+        .zip(app.state.workspaces.iter().flat_map(|workspace| {
+            (0..workspace.tabs.len()).map(move |tab_index| (workspace, tab_index))
+        }))
+        .map(|(tab, (workspace, tab_index))| {
+            let state = &workspace.tabs[tab_index];
+            // Label facts of this tab; same rule as the outer window title.
+            let facts = workspace
+                .tab_label_facts(tab_index, &app.state.terminals)
+                .unwrap_or_default();
             let tab_id = tab.tab_id;
             protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
@@ -119,12 +121,12 @@ pub(super) fn snapshot_with_completions(
                 custom_label: !state.is_auto_named(),
                 zoomed: state.zoomed,
                 agent_status: tab.agent_status,
-                place: None,
-                agent_label: None,
-                foreground_process: None,
+                place: facts.place,
+                agent_label: facts.agent,
+                foreground_process: facts.foreground_process.map(str::to_owned),
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
     let panes = snapshot
         .panes
         .into_iter()
@@ -152,7 +154,7 @@ pub(super) fn snapshot_with_completions(
                 foreground_process: pane.foreground_process,
             }
         })
-        .collect::<Vec<_>>();
+        .collect();
     let agents = snapshot
         .agents
         .into_iter()
@@ -180,9 +182,7 @@ pub(super) fn snapshot_with_completions(
                 focused,
             }
         })
-        .collect::<Vec<_>>();
-    let mut tabs = tabs;
-    fill_tab_label_facts(app, &mut tabs, &panes, &agents);
+        .collect();
 
     let agent_view_label = app
         .state
@@ -632,65 +632,6 @@ fn split_hit_rect(
     Some(hit)
 }
 
-/// Facts the client composes tab and workspace labels from: place of the tab's
-/// root pane, the agent detected in the tab, and the foreground process of the
-/// tab's focused pane. Built once per snapshot from already collected pane and
-/// agent rows and the cached workspace Git identity; no filesystem or process
-/// reads.
-fn fill_tab_label_facts(
-    app: &app::App,
-    tabs: &mut [protocol::ClientShellTab],
-    panes: &[protocol::ClientShellPane],
-    agents: &[protocol::ClientShellAgent],
-) {
-    let panes_by_id = panes
-        .iter()
-        .map(|pane| (pane.pane_id.as_str(), pane))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut agents_by_tab =
-        std::collections::HashMap::<&str, Vec<&protocol::ClientShellAgent>>::new();
-    for agent in agents
-        .iter()
-        .filter(|agent| agent.agent.is_some() || agent.display_agent.is_some())
-    {
-        agents_by_tab
-            .entry(agent.tab_id.as_str())
-            .or_default()
-            .push(agent);
-    }
-    for tab in tabs {
-        let Some((workspace_index, tab_index)) = app.parse_tab_id(&tab.tab_id) else {
-            continue;
-        };
-        let Some(workspace) = app.state.workspaces.get(workspace_index) else {
-            continue;
-        };
-        let Some(state) = workspace.tabs.get(tab_index) else {
-            continue;
-        };
-        let focused_pane_id = app.public_pane_id(workspace_index, state.layout.focused());
-        tab.place = if tab_index == 0 {
-            Some(workspace.place_label())
-        } else {
-            app.public_pane_id(workspace_index, state.root_pane)
-                .and_then(|pane_id| panes_by_id.get(pane_id.as_str()))
-                .and_then(|pane| pane.cwd.as_deref())
-                .map(|cwd| workspace.place_label_for(std::path::Path::new(cwd)))
-        };
-        tab.agent_label = agents_by_tab.get(tab.tab_id.as_str()).and_then(|agents| {
-            agents
-                .iter()
-                .find(|agent| focused_pane_id.as_deref() == Some(agent.pane_id.as_str()))
-                .or_else(|| agents.first())
-                .and_then(|agent| agent.display_agent.clone().or_else(|| agent.agent.clone()))
-        });
-        tab.foreground_process = focused_pane_id
-            .as_deref()
-            .and_then(|pane_id| panes_by_id.get(pane_id))
-            .and_then(|pane| pane.foreground_process.clone());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +731,50 @@ mod tests {
             .tabs
             .iter()
             .all(|tab| tab.foreground_process.is_none()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_tab_agent_and_window_title_share_the_focused_pane_rule() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("agents");
+        let root = workspace.tabs[0].root_pane;
+        let split = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        for (pane, agent) in [
+            (root, crate::detect::Agent::Pi),
+            (split, crate::detect::Agent::Claude),
+        ] {
+            let terminal_id = app.state.workspaces[0].tabs[0]
+                .terminal_id(pane)
+                .expect("terminal")
+                .clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("terminal")
+                .set_detected_state(Some(agent), crate::detect::AgentState::Idle);
+        }
+        for focused in [split, root] {
+            app.state.workspaces[0].tabs[0].layout.focus_pane(focused);
+            let expected = if focused == root {
+                crate::detect::agent_label(crate::detect::Agent::Pi)
+            } else {
+                crate::detect::agent_label(crate::detect::Agent::Claude)
+            };
+            let shell = snapshot(&app, "boot", 1, None, None);
+            assert_eq!(shell.tabs[0].agent_label.as_deref(), Some(expected));
+            let title = app.tab_title_label(0, 0).expect("tab title");
+            assert!(title.ends_with(&format!(" · {expected}")), "{title}");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

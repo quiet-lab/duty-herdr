@@ -119,9 +119,7 @@ impl App {
 
     /// Tab label by the shared rule of `crate::auto_label`: the manual tab
     /// label while an agent is detected in the tab, otherwise
-    /// `<symbol> <place> · <app>`. Reads cached state of this one tab only:
-    /// terminal metadata, the cached workspace Git identity, and the cwd last
-    /// admitted to `TerminalState`; no process or filesystem reads.
+    /// `<symbol> <place> · <app>`, from [`crate::workspace::Workspace::tab_label_facts`].
     pub(crate) fn tab_title_label(
         &self,
         workspace_index: usize,
@@ -130,50 +128,19 @@ impl App {
         let workspace = self.state.workspaces.get(workspace_index)?;
         let tab = workspace.tabs.get(tab_index)?;
         let fallback = workspace.tab_display_name(tab_index)?;
-        let terminal_of = |pane_id| {
-            tab.terminal_id(pane_id)
-                .and_then(|terminal_id| self.state.terminals.get(terminal_id))
-        };
-        let agent_of = |terminal: &crate::terminal::TerminalState| {
-            terminal
-                .is_agent_terminal()
-                .then(|| {
-                    terminal
-                        .effective_presentation()
-                        .display_agent
-                        .or_else(|| terminal.effective_agent_label().map(str::to_owned))
-                })
-                .flatten()
-                .filter(|label| !label.is_empty())
-        };
-        let focused = tab.layout.focused();
-        let focused_terminal = terminal_of(focused);
-        // The focused pane answers first; other panes of this tab are looked at
-        // only when it runs no agent.
-        let agent = focused_terminal.and_then(agent_of).or_else(|| {
-            tab.layout
-                .pane_ids()
-                .into_iter()
-                .filter(|pane_id| *pane_id != focused)
-                .find_map(|pane_id| terminal_of(pane_id).and_then(agent_of))
-        });
-        let place = if tab_index == 0 {
-            Some(workspace.place_label())
-        } else {
-            terminal_of(tab.root_pane).map(|terminal| workspace.place_label_for(&terminal.cwd))
-        };
+        let facts = workspace.tab_label_facts(tab_index, &self.state.terminals)?;
         let symbol = workspace.effective_symbol(&self.state.workspace_symbols);
-        let facts = crate::auto_label::LabelFacts::new(
+        let label_facts = crate::auto_label::LabelFacts::new(
             symbol.as_deref(),
-            place.as_deref(),
-            agent.as_deref(),
-            focused_terminal.and_then(|terminal| terminal.foreground_process.as_deref()),
+            facts.place.as_deref(),
+            facts.agent.as_deref(),
+            facts.foreground_process,
         );
         Some(
             crate::auto_label::display_label(
                 tab.custom_name.as_deref(),
-                agent.is_some(),
-                facts.auto_label(),
+                facts.agent.is_some(),
+                label_facts.auto_label().map(std::borrow::Cow::Owned),
                 &fallback,
             )
             .into_owned(),

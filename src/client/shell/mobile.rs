@@ -240,9 +240,16 @@ fn compact_tab_status(snapshot: &ClientShellSnapshot, workspace: &ClientShellWor
         .position(|tab| tab.tab_id == workspace.active_tab_id)
         .unwrap_or(0);
     let symbol = super::labels::workspace_symbol(workspace);
+    // A lone tab without a manual label repeats its workspace: show its number.
     let label = tabs
         .get(active)
-        .map(|tab| super::labels::tab_label(symbol, tab))
+        .map(|tab| {
+            if super::labels::tab_token_shown(tab, tabs.len()) {
+                super::labels::tab_label(symbol, tab)
+            } else {
+                std::borrow::Cow::Borrowed(tab.label.as_str())
+            }
+        })
         .unwrap_or(std::borrow::Cow::Borrowed("1"));
     if tabs.len() <= 1 {
         format!("tab {label}")
@@ -660,16 +667,20 @@ fn mobile_items(
         for row in agents {
             let endpoint = row.endpoint;
             let agent = row.agent;
-            let workspace = endpoint
+            let labeled =
+                super::labels::LabeledSnapshot::new(endpoint.snapshot, Some(endpoint.labels));
+            let workspace_index = endpoint
                 .snapshot
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.workspace_id == agent.workspace_id);
-            let tab = endpoint
+                .position(|workspace| workspace.workspace_id == agent.workspace_id);
+            let workspace =
+                workspace_index.and_then(|index| endpoint.snapshot.workspaces.get(index));
+            let tab_index = endpoint
                 .snapshot
                 .tabs
                 .iter()
-                .find(|tab| tab.tab_id == agent.tab_id);
+                .position(|tab| tab.tab_id == agent.tab_id);
             let agent_label = agent
                 .display_agent
                 .as_deref()
@@ -680,22 +691,11 @@ fn mobile_items(
                 .map(|workspace| workspace.label.as_str())
                 .unwrap_or(agent_label);
             let mut detail = Vec::new();
-            let workspace_tab_count = endpoint
-                .snapshot
-                .tabs
-                .iter()
-                .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-                .count();
-            if let Some(tab) = tab.filter(|tab| {
-                tab.custom_label || workspace_tab_count > 1 || super::labels::tab_has_facts(tab)
+            let workspace_tab_count = workspace_index.map_or(0, |index| labeled.tab_count(index));
+            if let Some(tab_index) = tab_index.filter(|&index| {
+                super::labels::tab_token_shown(&endpoint.snapshot.tabs[index], workspace_tab_count)
             }) {
-                detail.push(
-                    super::labels::tab_label(
-                        workspace.and_then(super::labels::workspace_symbol),
-                        tab,
-                    )
-                    .into_owned(),
-                );
+                detail.push(labeled.tab_label(tab_index).into_owned());
             }
             let status_key = status_text(agent.agent_status);
             detail.push(
@@ -836,11 +836,9 @@ fn mobile_items(
             } else {
                 &workspace.label
             };
-            let name = super::labels::WorkspaceLabel::new(
-                workspace,
-                super::labels::first_tab(endpoint.snapshot, workspace),
-            )
-            .display(workspace, fallback);
+            let name =
+                super::labels::LabeledSnapshot::new(endpoint.snapshot, Some(endpoint.labels))
+                    .workspace_label(entry.index, fallback);
             let branch = workspace.branch.as_deref().unwrap_or("shell");
             let detail_prefix = if entry.indented {
                 if entry.last_child {
@@ -939,6 +937,11 @@ fn mobile_items(
             .iter()
             .find(|workspace| workspace.workspace_id == workspace_id)
             .and_then(super::labels::workspace_symbol);
+        let focused_tab_count = snapshot
+            .tabs
+            .iter()
+            .filter(|tab| tab.workspace_id == workspace_id)
+            .count();
         items.push(MobileItem::section("tabs", palette));
         items.push(MobileItem::action(
             "  + new tab",
@@ -956,7 +959,10 @@ fn mobile_items(
             } else {
                 palette.panel_bg
             };
-            let label = if tab.custom_label || super::labels::tab_has_facts(tab) {
+            // A lone tab without a manual label repeats its workspace.
+            let label = if tab.custom_label
+                || (focused_tab_count > 1 && super::labels::tab_has_facts(tab))
+            {
                 format!(
                     "{} · {}",
                     index + 1,
