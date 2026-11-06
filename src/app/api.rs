@@ -354,8 +354,17 @@ impl App {
                 None
             };
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
-        // The background task publishes this event only on an actual change.
-        let foreground_process_changed = matches!(ev, AppEvent::ForegroundProcessChanged { .. });
+        // The background task publishes this event only on an actual change;
+        // the state check below keeps duplicate deliveries from emitting events.
+        let foreground_process_pane =
+            if let AppEvent::ForegroundProcessChanged { pane_id, name } = &ev {
+                self.find_pane(*pane_id)
+                    .and_then(|(_, pane)| self.state.terminals.get(&pane.attached_terminal_id))
+                    .is_some_and(|terminal| terminal.foreground_process != *name)
+                    .then_some(*pane_id)
+            } else {
+                None
+            };
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
         if update_ready.is_some() {
@@ -387,9 +396,12 @@ impl App {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
-        if foreground_process_changed {
+        if let Some(pane_id) = foreground_process_pane {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
+            if let Some((ws_idx, _)) = self.find_pane(pane_id) {
+                self.emit_pane_updated(ws_idx, pane_id);
+            }
         }
         for update in &pane_updates {
             self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
@@ -1506,6 +1518,55 @@ mod tests {
             },
         );
         app
+    }
+
+    #[tokio::test]
+    async fn foreground_process_change_emits_pane_updated_once_per_change() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("fg")];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_updates = |hub: &crate::api::EventHub| -> Vec<Option<String>> {
+            hub.events_after(0)
+                .into_iter()
+                .filter_map(|(_, event)| match event.data {
+                    crate::api::schema::EventData::PaneUpdated { pane } => {
+                        Some(pane.foreground_process)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        app.handle_internal_event(AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("nvim".into()),
+        });
+        assert_eq!(pane_updates(&event_hub), vec![Some("nvim".to_string())]);
+
+        app.handle_internal_event(AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: Some("nvim".into()),
+        });
+        assert_eq!(pane_updates(&event_hub).len(), 1);
+
+        app.handle_internal_event(AppEvent::ForegroundProcessChanged {
+            pane_id,
+            name: None,
+        });
+        assert_eq!(
+            pane_updates(&event_hub),
+            vec![Some("nvim".to_string()), None]
+        );
     }
 
     #[tokio::test]
