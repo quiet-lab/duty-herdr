@@ -37,7 +37,7 @@ fn agent_input_pane<'a>(
 }
 
 /// Input pane of the agent in `target_pane_id`, when that agent has one.
-fn input_pane_for_target<'a>(
+pub(super) fn input_pane_for_target<'a>(
     snapshot: &'a crate::protocol::ClientShellSnapshot,
     target_pane_id: &str,
 ) -> Option<&'a str> {

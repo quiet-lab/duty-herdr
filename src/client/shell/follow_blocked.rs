@@ -298,33 +298,6 @@ impl FollowBlocked {
     }
 }
 
-/// Pane to focus for a dialog pane: the input pane named by the agent's `input_pane` token
-/// when it exists in the same tab, otherwise the dialog pane itself.
-///
-/// NOTE: local copy of the target-pane rule of the sidebar-focus-input task; replace it with
-/// that shared function when both branches merge.
-fn focus_pane_for_dialog(snapshot: &ClientShellSnapshot, pane_id: String) -> String {
-    let Some(agent) = snapshot
-        .agents
-        .iter()
-        .find(|agent| agent.pane_id == pane_id)
-    else {
-        return pane_id;
-    };
-    let Some((_, input_pane_id)) = agent.tokens.iter().find(|(key, _)| key == "input_pane") else {
-        return pane_id;
-    };
-    if snapshot
-        .panes
-        .iter()
-        .any(|pane| &pane.pane_id == input_pane_id && pane.tab_id == agent.tab_id)
-    {
-        input_pane_id.clone()
-    } else {
-        pane_id
-    }
-}
-
 impl ClientShellState {
     /// Runs the dialog queue against the active endpoint snapshot that was just installed and
     /// returns the endpoint request that moves focus, if the queue asks for one.
@@ -345,7 +318,8 @@ impl ClientShellState {
         let method = match focus {
             FollowBlockedFocus::Pane(pane_id) => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                    pane_id: focus_pane_for_dialog(snapshot, pane_id),
+                    pane_id: super::input_focus::input_pane_for_target(snapshot, &pane_id)
+                        .map_or(pane_id.clone(), str::to_owned),
                 })
             }
             FollowBlockedFocus::Workspace(workspace_id) => {
