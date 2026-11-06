@@ -1,6 +1,26 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
+/// Reported workspace tokens as carried by a session snapshot: the values
+/// with their remaining lifetime and the per-source sequence counters.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedMetadata {
+    #[serde(default)]
+    pub tokens: HashMap<String, PersistedMetadataToken>,
+    #[serde(default)]
+    pub sequences: HashMap<String, u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedMetadataToken {
+    pub value: String,
+    /// Milliseconds left before the token expires; `None` never expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_remaining_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MetadataToken {
     value: String,
@@ -90,6 +110,50 @@ impl MetadataTokens {
             .iter()
             .map(|(key, token)| (key.clone(), token.value.clone()))
             .collect()
+    }
+
+    /// Live tokens with their remaining lifetime, for a session snapshot.
+    pub(crate) fn export(&self, now: Instant) -> HashMap<String, PersistedMetadataToken> {
+        self.entries
+            .iter()
+            .filter_map(|(key, token)| {
+                let ttl_remaining_ms = match token.expires_at {
+                    Some(deadline) if deadline <= now => return None,
+                    Some(deadline) => Some(
+                        u64::try_from(deadline.duration_since(now).as_millis())
+                            .unwrap_or(u64::MAX)
+                            .max(1),
+                    ),
+                    None => None,
+                };
+                Some((
+                    key.clone(),
+                    PersistedMetadataToken {
+                        value: token.value.clone(),
+                        ttl_remaining_ms,
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Rebuilds tokens exported by `export`, restarting their lifetimes at `now`.
+    pub(crate) fn import(tokens: &HashMap<String, PersistedMetadataToken>, now: Instant) -> Self {
+        let entries = tokens
+            .iter()
+            .map(|(key, token)| {
+                (
+                    key.clone(),
+                    MetadataToken {
+                        value: token.value.clone(),
+                        expires_at: token
+                            .ttl_remaining_ms
+                            .and_then(|ms| now.checked_add(Duration::from_millis(ms))),
+                    },
+                )
+            })
+            .collect();
+        Self { entries }
     }
 
     pub(crate) fn next_expiry(&self) -> Option<Instant> {
@@ -259,5 +323,31 @@ mod tests {
             tokens.values(),
             HashMap::from([("summary".into(), "persistent".into())])
         );
+    }
+
+    #[test]
+    fn export_import_keeps_values_and_remaining_lifetime() {
+        let now = Instant::now();
+        let mut tokens = MetadataTokens::default();
+        tokens.patch(patch(&[("color", Some("#fff"))]), None, now);
+        tokens.patch(
+            patch(&[("summary", Some("busy"))]),
+            Some(Duration::from_secs(10)),
+            now,
+        );
+        tokens.patch(
+            patch(&[("gone", Some("x"))]),
+            Some(Duration::from_secs(1)),
+            now,
+        );
+        let exported = tokens.export(now + Duration::from_secs(2));
+        assert!(!exported.contains_key("gone"));
+        assert_eq!(exported["color"].ttl_remaining_ms, None);
+        assert_eq!(exported["summary"].ttl_remaining_ms, Some(8000));
+        let later = now + Duration::from_secs(100);
+        let imported = MetadataTokens::import(&exported, later);
+        assert_eq!(imported.value("color"), Some("#fff"));
+        assert_eq!(imported.value("summary"), Some("busy"));
+        assert_eq!(imported.next_expiry(), Some(later + Duration::from_secs(8)));
     }
 }

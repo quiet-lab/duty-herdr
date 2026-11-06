@@ -866,4 +866,20 @@ tasks = ["o"]
         let read: AssignedWorkspaceTokens = serde_json::from_str("{}").unwrap();
         assert_eq!(read, AssignedWorkspaceTokens::default());
     }
+
+    #[test]
+    fn rule_reload_keeps_reported_tokens_and_recomputes_herdr_ones() {
+        let mut state = state_with(RULES, &["/work/pets/duty"]);
+        report(&mut state.workspaces[0], "color", "#ffffff");
+        assert!(state.set_workspace_symbol_rules(rules(
+            r#"
+[ui.workspace_symbols.outside]
+main = "🏠"
+tasks = ["o"]
+"#
+        )));
+        let tokens = state.workspaces[0].effective_tokens(&state.workspace_symbols);
+        assert_eq!(tokens.get("color").map(String::as_str), Some("#ffffff"));
+        assert_eq!(tokens.get("symbol").map(String::as_str), Some("🏠"));
+    }
 }

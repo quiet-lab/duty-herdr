@@ -428,9 +428,21 @@ fn restore_workspace(
             cached_git_space: None,
             worktree_space: snap.worktree_space.clone(),
             parent_workspace_id: snap.parent_workspace_id.clone(),
-            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_tokens: snap.reported_metadata.as_ref().map_or_else(
+                crate::metadata_tokens::MetadataTokens::default,
+                |reported| {
+                    crate::metadata_tokens::MetadataTokens::import(
+                        &reported.tokens,
+                        std::time::Instant::now(),
+                    )
+                },
+            ),
             assigned_tokens: snap.assigned_tokens.clone(),
-            metadata_token_sequences: HashMap::new(),
+            metadata_token_sequences: snap
+                .reported_metadata
+                .as_ref()
+                .map(|reported| reported.sequences.clone())
+                .unwrap_or_default(),
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,
@@ -1634,6 +1646,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -1717,6 +1730,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
                 public_tab_numbers: vec![5],
@@ -1832,6 +1846,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
                 public_tab_numbers: vec![1, 3, 4, 5],
@@ -1917,6 +1932,7 @@ mod tests {
             worktree_space: None,
             parent_workspace_id: None,
             assigned_tokens: None,
+            reported_metadata: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
             public_tab_numbers: Vec::new(),
@@ -1958,6 +1974,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -2316,6 +2333,7 @@ mod tests {
                 worktree_space: None,
                 parent_workspace_id: None,
                 assigned_tokens: None,
+                reported_metadata: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
                 public_tab_numbers: Vec::new(),
@@ -2338,5 +2356,64 @@ mod tests {
         };
         history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
         (snapshot, history)
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_reported_workspace_tokens_and_sequences() {
+        let mut snapshot: SessionSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
+        assert!(
+            snapshot
+                .workspaces
+                .iter()
+                .all(|workspace| workspace.reported_metadata.is_none()),
+            "a snapshot written before the field must load without it"
+        );
+        let cwd = std::env::current_dir().unwrap();
+        for workspace in &mut snapshot.workspaces {
+            workspace.identity_cwd = cwd.clone();
+            for tab in &mut workspace.tabs {
+                for pane in tab.panes.values_mut() {
+                    pane.cwd = cwd.clone();
+                }
+            }
+        }
+        snapshot.workspaces[0].reported_metadata = Some(crate::metadata_tokens::ReportedMetadata {
+            tokens: HashMap::from([(
+                "color".to_owned(),
+                crate::metadata_tokens::PersistedMetadataToken {
+                    value: "#ffffff".into(),
+                    ttl_remaining_ms: None,
+                },
+            )]),
+            sequences: HashMap::from([("hook".to_owned(), 7)]),
+        });
+        // Round-trip through the saved JSON form.
+        let json = serde_json::to_string(&snapshot).unwrap();
+        let snapshot: SessionSnapshot = serde_json::from_str(&json).unwrap();
+
+        let (events, _rx) = mpsc::channel(32);
+        let (workspaces, _, _) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert_eq!(
+            workspaces[0].metadata_tokens.value("color"),
+            Some("#ffffff")
+        );
+        assert_eq!(workspaces[0].metadata_token_sequences["hook"], 7);
+        assert_eq!(workspaces[1].metadata_tokens.value("color"), None);
     }
 }
