@@ -374,7 +374,7 @@ impl App {
     ) -> Option<crate::api::schema::AgentInfo> {
         let terminal = self.agent_terminal_for_pane(ws_idx, pane_id)?;
         let pane = self.pane_metadata(ws_idx, pane_id)?;
-        Some(agent_info_from_pane(terminal, pane))
+        Some(agent_info_from_pane(terminal, &pane))
     }
 
     /// Terminal of a pane that hosts an agent, `None` for other panes.
@@ -389,42 +389,7 @@ impl App {
             .get(&pane_state.attached_terminal_id)
             .filter(|terminal| terminal.is_agent_terminal())
     }
-}
 
-/// Agent facts from the pane metadata of the same pane; the pane's scroll
-/// state is not part of them.
-pub(super) fn agent_info_from_pane(
-    terminal: &crate::terminal::TerminalState,
-    pane: crate::api::schema::PaneInfo,
-) -> crate::api::schema::AgentInfo {
-    crate::api::schema::AgentInfo {
-        terminal_id: pane.terminal_id,
-        name: terminal.agent_name.clone(),
-        agent: pane.agent,
-        title: pane.title,
-        terminal_title: pane.terminal_title,
-        terminal_title_stripped: pane.terminal_title_stripped,
-        display_agent: pane.display_agent,
-        agent_status: pane.agent_status,
-        screen_detection_skipped: terminal.full_lifecycle_hook_authority_active(),
-        state_labels: pane.state_labels,
-        tokens: pane.tokens,
-        agent_session: pane.agent_session,
-        workspace_id: pane.workspace_id,
-        tab_id: pane.tab_id,
-        pane_id: pane.pane_id,
-        focused: pane.focused,
-        launch_pending: terminal.managed_agent_launch_pending(),
-        interactive_ready: terminal.managed_agent_interactive_ready(),
-        state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
-        completion_seq: terminal.last_agent_completion_seq,
-        cwd: pane.cwd,
-        foreground_cwd: pane.foreground_cwd,
-        revision: pane.revision,
-    }
-}
-
-impl App {
     fn agent_name_conflicts(
         &self,
         name: &str,
@@ -493,6 +458,39 @@ pub(super) enum AgentRenameError {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,
     },
+}
+
+/// Agent facts from the pane metadata of the same pane; only the fields an
+/// agent carries are copied.
+pub(super) fn agent_info_from_pane(
+    terminal: &crate::terminal::TerminalState,
+    pane: &crate::api::schema::PaneInfo,
+) -> crate::api::schema::AgentInfo {
+    crate::api::schema::AgentInfo {
+        terminal_id: pane.terminal_id.clone(),
+        name: terminal.agent_name.clone(),
+        agent: pane.agent.clone(),
+        title: pane.title.clone(),
+        terminal_title: pane.terminal_title.clone(),
+        terminal_title_stripped: pane.terminal_title_stripped.clone(),
+        display_agent: pane.display_agent.clone(),
+        agent_status: pane.agent_status,
+        screen_detection_skipped: terminal.full_lifecycle_hook_authority_active(),
+        state_labels: pane.state_labels.clone(),
+        tokens: pane.tokens.clone(),
+        agent_session: pane.agent_session.clone(),
+        workspace_id: pane.workspace_id.clone(),
+        tab_id: pane.tab_id.clone(),
+        pane_id: pane.pane_id.clone(),
+        focused: pane.focused,
+        launch_pending: terminal.managed_agent_launch_pending(),
+        interactive_ready: terminal.managed_agent_interactive_ready(),
+        state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
+        completion_seq: terminal.last_agent_completion_seq,
+        cwd: pane.cwd.clone(),
+        foreground_cwd: pane.foreground_cwd.clone(),
+        revision: pane.revision,
+    }
 }
 
 #[cfg(test)]

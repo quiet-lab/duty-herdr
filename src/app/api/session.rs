@@ -56,22 +56,17 @@ impl App {
         let mut agents = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             workspaces.push(self.workspace_info(ws_idx));
-            for (tab_idx, tab) in ws.tabs.iter().enumerate() {
-                if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
-                    tabs.push(tab);
-                }
+            for (tab_idx, tab_state) in ws.tabs.iter().enumerate() {
+                tabs.extend(self.tab_info(ws_idx, tab_idx));
                 if layouts_policy == Layouts::Include {
                     layouts.extend(self.pane_layout_snapshot(ws_idx, tab_idx));
                 }
-                for pane_id in tab.layout.pane_ids() {
+                for pane_id in tab_state.layout.pane_ids() {
                     let Some(pane) = pane_info(self, ws_idx, pane_id) else {
                         continue;
                     };
                     if let Some(terminal) = self.agent_terminal_for_pane(ws_idx, pane_id) {
-                        agents.push(crate::app::agents::agent_info_from_pane(
-                            terminal,
-                            pane.clone(),
-                        ));
+                        agents.push(crate::app::agents::agent_info_from_pane(terminal, &pane));
                     }
                     panes.push(pane);
                 }
