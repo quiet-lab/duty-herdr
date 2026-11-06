@@ -10,6 +10,48 @@ use serde::{Deserialize, Serialize};
 pub struct ReportedMetadata {
     #[serde(default)]
     pub tokens: HashMap<String, PersistedMetadataToken>,
+    /// Presentation reported per source (`pane report-metadata`); panes only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presentation: Vec<PersistedPresentation>,
+}
+
+/// One source's reported pane presentation. Ages and lifetimes are relative,
+/// so they survive a restart of the monotonic clock.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistedPresentation {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_to_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub state_labels: HashMap<String, String>,
+    /// Milliseconds since the source last reported.
+    #[serde(default)]
+    pub age_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_agent_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub state_label_age_ms: HashMap<String, u64>,
+    /// Total lifetime from the last report; `None` never expires.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+}
+
+pub(crate) fn age_ms(since: Instant, now: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(since).as_millis()).unwrap_or(u64::MAX)
+}
+
+/// An instant `age_ms` before `now`; `now` itself when the clock is too young.
+pub(crate) fn instant_before(now: Instant, age_ms: u64) -> Instant {
+    now.checked_sub(Duration::from_millis(age_ms))
+        .unwrap_or(now)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
