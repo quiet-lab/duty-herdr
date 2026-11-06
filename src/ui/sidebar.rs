@@ -336,9 +336,10 @@ impl TokenPaint {
         let background = patch.bg.and_then(painted_background);
         match patch.fg {
             Some(SidebarTokenColor::Panel) if self.cursor => {
-                if let Some(background) = background {
-                    style = style.fg(background);
-                }
+                // `$terminal` paints Reset, which is no readable text color.
+                style = style.fg(background
+                    .filter(|color| *color != ratatui::style::Color::Reset)
+                    .unwrap_or(self.panel_text));
             }
             Some(foreground) => {
                 style = style.fg(foreground.ratatui_with_panel(self.panel_text));
