@@ -123,7 +123,7 @@ pub enum SidebarTokenColor {
 }
 
 /// Maximum number of `|`-separated alternatives in one color value.
-const MAX_COLOR_ALTERNATIVES: usize = 4;
+const MAX_COLOR_ALTERNATIVES: usize = 3;
 
 /// One alternative of a color chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +303,7 @@ impl SidebarTokenStyle {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // inline `Copy` color chains keep styles allocation-free in render paths
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSidebarToken {
     StateIcon,
@@ -323,6 +324,7 @@ pub enum AgentSidebarToken {
     },
 }
 
+#[allow(clippy::large_enum_variant)] // inline `Copy` color chains keep styles allocation-free in render paths
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpaceSidebarToken {
     StateIcon,
@@ -415,6 +417,7 @@ struct RawStyledSidebarToken {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)] // inline `Copy` color chains keep styles allocation-free in render paths
 enum RawSidebarToken {
     Plain(String),
     Styled(RawStyledSidebarToken),
@@ -1137,7 +1140,7 @@ rows = [[{ token = "workspace", fg = "$color|#ffffff", bg = "$accent|$color|#89b
             "$bad.name|#fff",
             "$color|red",
             "$color|#abcd",
-            "$a|$b|$c|$d|$e",
+            "$a|$b|$c|$d",
         ] {
             assert!(SidebarTokenColor::parse(value).is_err(), "{value}");
             let input =
