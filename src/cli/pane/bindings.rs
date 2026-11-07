@@ -407,6 +407,7 @@ impl Leaf {
             "send-text" => command.after_help("next: herdr pane run <PANE_ID> <COMMAND> sends text and Enter in one call"),
             "send-keys" => command.after_help("Use esc as the canonical Escape key name; escape is also accepted."),
             "activate" => command.after_help("The pane becomes the focused pane of its tab and that tab the active tab of its workspace. No client switches workspace: a client looking at the workspace sees the focus move at once, others find it there when they switch. A zoomed tab stays zoomed and shows the pane."),
+            "run-command" => command.after_help("The command runs through the platform shell with no terminal and stdin closed, in the pane's directory, with HERDR_ENV, HERDR_WORKSPACE_ID, HERDR_TAB_ID, HERDR_PANE_ID and HERDR_SOCKET_PATH of the pane. The call returns at once; started is false while the same command for the same pane still runs. A non-zero exit shows a notification with the end of stderr."),
             "wait-output" => command.after_help("The selected snapshot is searched immediately, including existing output, then polled. Without --timeout, this waits indefinitely."),
             _ => command,
         }
@@ -571,6 +572,14 @@ pub(super) const LEAVES: &[Leaf] = &[
         Json,
         PaneZoomProjection,
         PaneZoom
+    ),
+    leaf!(
+        "run-command",
+        "Run a shell command outside panes with a pane's environment",
+        "cli:pane:run-command",
+        Json,
+        PaneRunCommandProjection,
+        PaneRunCommand
     ),
     leaf!(
         "activate",

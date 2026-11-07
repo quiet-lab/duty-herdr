@@ -185,19 +185,23 @@ impl PaneLaunchEnv {
     }
 }
 
+/// Variables of the agent session that started the server. Processes Herdr
+/// starts for panes (and detached key commands) are not child agents of it.
+pub(crate) const AGENT_SESSION_ENV_VARS: &[&str] = &[
+    "CODEX_THREAD_ID",
+    "OMPCODE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+];
+
 fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
     #[cfg(unix)]
     crate::platform::ssh_agent::apply_pane_env(cmd);
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
-    for key in [
-        "CODEX_THREAD_ID",
-        "OMPCODE",
-        "CLAUDECODE",
-        "CLAUDE_CODE_CHILD_SESSION",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_MESSAGING_TOKEN",
-    ] {
+    for key in AGENT_SESSION_ENV_VARS {
         cmd.env_remove(key);
     }
     for (key, value) in &launch_env.extra {

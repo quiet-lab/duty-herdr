@@ -148,6 +148,7 @@ operations::define_operations! {
     PluginPaneFocus(PluginPaneFocusParams) => "plugin.pane.focus", true, false;
     PluginPaneClose(PluginPaneCloseParams) => "plugin.pane.close", true, false;
     PaneActivate(PaneTarget) => "pane.activate", true, true;
+    PaneRunCommand(PaneRunCommandParams) => "pane.run_command", false, false;
 }
 
 #[cfg(test)]

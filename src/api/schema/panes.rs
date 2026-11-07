@@ -383,6 +383,16 @@ crate::cli::projection::cli_params! {
     }
 }
 
+// `pane.run_command`: runs `command` outside panes with the environment of
+// `pane_id`, like a `[[keys.command]]` with `type = "shell"`.
+crate::cli::projection::cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct PaneRunCommandParams => PaneRunCommandProjection {
+        pub pane_id: String => Field::new(String::new()).input(binding::pane_id()),
+        pub command: String => Field::new(String::new()).input(binding::joined("command", "COMMAND")),
+    }
+}
+
 crate::cli::projection::cli_params! {
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
     pub struct PaneReadParams => PaneReadProjection {
@@ -640,6 +650,15 @@ pub struct PaneActivateResult {
     /// Whether the pane's workspace is the server's focused workspace.
     pub workspace_focused: bool,
     pub pane: Box<PaneInfo>,
+}
+
+/// Result of `pane.run_command`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneRunCommandResult {
+    pub pane_id: String,
+    /// Whether the command started; `false` while the same command for the
+    /// same pane is still running.
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

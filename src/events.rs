@@ -217,6 +217,19 @@ pub enum AppEvent {
         stderr: String,
         error: Option<String>,
     },
+    /// A detached shell command (`[[keys.command]]` with `type = "shell"` or
+    /// `pane.run_command`) exited; its command text may run again.
+    DetachedCommandExited { key: String },
+    /// A detached shell command exited with a non-zero status or could not be
+    /// waited for. Clients show it as a notification.
+    DetachedCommandFailed {
+        /// Binding label such as `ctrl+alt+r`; `None` for `pane.run_command`.
+        label: Option<String>,
+        /// Exit status as shown to the user, for example `exit 2`.
+        status: String,
+        /// Last characters of the command's stderr.
+        stderr_tail: String,
+    },
     /// Background `git worktree add` completed.
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.
