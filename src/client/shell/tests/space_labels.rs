@@ -227,11 +227,17 @@ fn agent_panel_tab_token_follows_the_shared_rule() {
 }
 
 #[test]
-fn lone_tab_without_manual_label_shows_no_tab_token() {
+fn lone_tab_without_manual_label_shows_workspace_label_in_tab_token() {
     let mut projected = labelled_snapshot();
     projected.tabs[0].agent_label = Some("opus".into());
     projected.agents.push(agent("tab_1", "opus"));
-    assert!(agent_tab_tokens(&projected).is_empty());
+    // Same text as the `workspace` token of the spaces row.
+    assert_eq!(agent_tab_tokens(&projected), vec!["mine"]);
+
+    // Workspace without a manual label: its automatic label.
+    projected.workspaces[0].custom_label = false;
+    assert_eq!(agent_tab_tokens(&projected), vec!["@ herdr · opus"]);
+    projected.workspaces[0].custom_label = true;
 
     // Navigator: the lone pane row names its workspace, not the tab.
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
