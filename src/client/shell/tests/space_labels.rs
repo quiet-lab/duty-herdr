@@ -191,13 +191,38 @@ fn tab_bar_labels_follow_the_shared_rule() {
 }
 
 fn agent_tab_tokens(projected: &ClientShellSnapshot) -> Vec<String> {
-    let config: Config = toml::from_str(
-        r#"
-[ui.sidebar.agents]
-rows = [["state_icon", "tab"]]
-"#,
+    agent_tab_tokens_in(projected, r#"rows = [["state_icon", "tab"]]"#)
+}
+
+/// Resolved tokens of every agent row for `[ui.sidebar.agents]` body `rows`,
+/// as `tab:<text>` and `workspace:<text>` strings, one list per row.
+fn agent_row_tokens_in(projected: &ClientShellSnapshot, rows: &str) -> Vec<Vec<String>> {
+    let config: Config = toml::from_str(&format!("[ui.sidebar.agents]\n{rows}\n")).expect("config");
+    let shell_config = ClientShellConfig::from_config(&config);
+    let labels = super::super::labels::SnapshotLabels::new(projected);
+    super::super::agent_sidebar::agent_rows(
+        super::super::labels::LabeledSnapshot::new(projected, Some(&labels)),
+        &shell_config,
+        None,
     )
-    .expect("config");
+    .into_iter()
+    .flat_map(|row| row.rows)
+    .map(|row| {
+        row.into_iter()
+            .filter_map(|token| match token.kind {
+                crate::ui::ResolvedTokenKind::Tab(label) => Some(format!("tab:{label}")),
+                crate::ui::ResolvedTokenKind::Workspace(label) => {
+                    Some(format!("workspace:{label}"))
+                }
+                _ => None,
+            })
+            .collect()
+    })
+    .collect()
+}
+
+fn agent_tab_tokens_in(projected: &ClientShellSnapshot, rows: &str) -> Vec<String> {
+    let config: Config = toml::from_str(&format!("[ui.sidebar.agents]\n{rows}\n")).expect("config");
     let shell_config = ClientShellConfig::from_config(&config);
     let labels = super::super::labels::SnapshotLabels::new(projected);
     super::super::agent_sidebar::agent_rows(
@@ -269,6 +294,52 @@ fn lone_tab_without_manual_label_shows_workspace_label_in_tab_token() {
     projected.tabs[0].label = "review".into();
     projected.tabs[0].custom_label = true;
     assert_eq!(agent_tab_tokens(&projected), vec!["review"]);
+}
+
+#[test]
+fn tab_fallback_is_hidden_in_a_row_with_the_workspace_token() {
+    let mut projected = labelled_snapshot();
+    projected.tabs[0].agent_label = Some("opus".into());
+    projected.agents.push(agent("tab_1", "opus"));
+
+    // The workspace token already shows the label: `tab` stays empty.
+    assert_eq!(
+        agent_row_tokens_in(&projected, r#"rows = [["state_icon", "workspace", "tab"]]"#),
+        vec![vec!["workspace:mine".to_string()]]
+    );
+    // The composition is checked per row, not across the agent's rows.
+    assert_eq!(
+        agent_row_tokens_in(&projected, r#"rows = [["workspace"], ["tab"]]"#),
+        vec![
+            vec!["workspace:mine".to_string()],
+            vec!["tab:mine".to_string()]
+        ]
+    );
+    // Without a workspace token in the row the fallback stays.
+    assert_eq!(
+        agent_row_tokens_in(&projected, r#"rows = [["state_icon", "tab"]]"#),
+        vec![vec!["tab:mine".to_string()]]
+    );
+
+    // A manual tab label is shown beside the workspace token as before.
+    projected.tabs[0].label = "review".into();
+    projected.tabs[0].custom_label = true;
+    assert_eq!(
+        agent_row_tokens_in(&projected, r#"rows = [["state_icon", "workspace", "tab"]]"#),
+        vec![vec!["workspace:mine".to_string(), "tab:review".to_string()]]
+    );
+
+    // So are several tabs.
+    let mut projected = with_second_tab(labelled_snapshot(), false);
+    projected.tabs[0].agent_label = Some("opus".into());
+    projected.agents.push(agent("tab_1", "opus"));
+    let rows = agent_row_tokens_in(&projected, r#"rows = [["state_icon", "workspace", "tab"]]"#);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0][0], "workspace:mine");
+    assert!(
+        rows[0].len() == 2 && rows[0][1].starts_with("tab:"),
+        "{rows:?}"
+    );
 }
 
 #[test]

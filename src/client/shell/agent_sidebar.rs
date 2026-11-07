@@ -274,14 +274,18 @@ pub(super) fn agent_row(
     let tab_count = labeled.tab_count(workspace_index);
     // A lone tab without a manual label repeats its workspace and has no tab
     // label of its own: the `tab` token falls back to the workspace label by the
-    // shared rule, so an agent row without a workspace token still has a caption.
-    let tab_label = tab_index.map(|index| {
-        if super::labels::tab_token_shown(&snapshot.tabs[index], tab_count) {
-            labeled.tab_label(index)
-        } else {
-            labeled.workspace_label(workspace_index, &workspace.label)
+    // shared rule, but only in a row without a workspace token (the row resolver
+    // decides), so an agent row without one still has a caption.
+    let (tab_label, tab_fallback_label) = match tab_index {
+        Some(index) if super::labels::tab_token_shown(&snapshot.tabs[index], tab_count) => {
+            (Some(labeled.tab_label(index)), None)
         }
-    });
+        Some(_) => (
+            None,
+            Some(labeled.workspace_label(workspace_index, &workspace.label)),
+        ),
+        None => (None, None),
+    };
     let canonical_agent = agent
         .agent
         .as_deref()
@@ -330,6 +334,7 @@ pub(super) fn agent_row(
             machine,
             workspace: &workspace.label,
             tab: tab_label.as_deref(),
+            tab_fallback: tab_fallback_label.as_deref(),
             focused_tab: focused_tab_label.as_deref(),
             tab_active: agent.tab_id == workspace.active_tab_id,
             pane: agent

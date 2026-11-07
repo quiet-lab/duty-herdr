@@ -56,6 +56,9 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) machine: Option<&'a str>,
     pub(crate) workspace: &'a str,
     pub(crate) tab: Option<&'a str>,
+    /// Caption of the `tab` token for a lone tab without a manual label; shown
+    /// only in a row without a `workspace` token, which already shows it.
+    pub(crate) tab_fallback: Option<&'a str>,
     pub(crate) focused_tab: Option<&'a str>,
     /// Whether the agent's tab (token `tab`) is active in its workspace.
     pub(crate) tab_active: bool,
@@ -82,6 +85,9 @@ pub(crate) fn agent_rows(
         .rows_for_agent(context.canonical_agent)
         .iter()
         .filter_map(|row| {
+            let row_has_workspace = row
+                .iter()
+                .any(|configured| matches!(configured.parts().0, AgentSidebarToken::Workspace));
             let resolved = row
                 .iter()
                 .filter_map(|configured| {
@@ -99,6 +105,7 @@ pub(crate) fn agent_rows(
                         }
                         AgentSidebarToken::Tab => context
                             .tab
+                            .or(context.tab_fallback.filter(|_| !row_has_workspace))
                             .map(|value| ResolvedTokenKind::Tab(value.to_string())),
                         AgentSidebarToken::FocusedTab => context
                             .focused_tab
@@ -302,6 +309,7 @@ mod tests {
             machine: None,
             workspace: &entry.workspace,
             tab: entry.tab.as_deref(),
+            tab_fallback: None,
             focused_tab: entry.focused_tab.as_deref(),
             tab_active: false,
             pane: entry.pane.as_deref(),
