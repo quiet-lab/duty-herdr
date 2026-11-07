@@ -1,7 +1,7 @@
 use super::*;
 use crate::api::schema::{
-    AgentStatus, EventData, EventEnvelope, EventKind, PaneInfo, PaneReadResult, ReadFormat,
-    ReadSource,
+    AgentStatus, ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, PaneInfo,
+    PaneReadResult, ReadFormat, ReadSource,
 };
 use crate::ipc::{poll_local_stream_read_count, LocalStreamReadCount};
 use interprocess::local_socket::traits::Listener as _;
@@ -354,4 +354,89 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     let response = ordinary.response();
     assert_eq!(response["id"], "ordinary");
     assert_eq!(response["result"]["type"], "workspace_list");
+}
+
+fn reply_to_revision_read(request: ApiRequestMessage, revision: u64) {
+    assert!(matches!(request.request.method, Method::PaneRead(_)));
+    reply(
+        request,
+        ResponseResult::PaneRead {
+            read: PaneReadResult {
+                pane_id: "pane_1".into(),
+                workspace_id: "workspace_1".into(),
+                tab_id: "tab_1".into(),
+                source: ReadSource::Recent,
+                format: ReadFormat::Text,
+                text: String::new(),
+                revision,
+                truncated: false,
+            },
+        },
+    );
+}
+
+fn reply_pane_not_found(request: ApiRequestMessage) {
+    request
+        .respond_to
+        .send(
+            serde_json::to_string(&ErrorResponse {
+                id: request.request.id,
+                error: ErrorBody {
+                    code: "pane_not_found".into(),
+                    message: "pane pane_1 not found".into(),
+                },
+            })
+            .unwrap(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn output_changed_subscription_reports_collapsed_changes_and_ends_with_the_pane() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    client.subscribe(
+        "out",
+        json!([{"type": "pane.output_changed", "pane_id": "pane_1"}]),
+    );
+    let probe = test.app_request();
+    assert_eq!(probe.request.id, "out:sub:0:probe");
+    reply_to_revision_read(probe, 10);
+    client.assert_started("out");
+
+    // Unchanged output sends nothing; a series between two polls is one event.
+    reply_to_revision_read(test.app_request(), 10);
+    reply_to_revision_read(test.app_request(), 16);
+    let event = client.response();
+    assert_eq!(event["event"], "pane.output_changed", "{event}");
+    assert_eq!(event["data"]["pane_id"], "pane_1");
+    assert_eq!(event["data"]["revision"], 16);
+    reply_to_revision_read(test.app_request(), 16);
+    reply_to_revision_read(test.app_request(), 18);
+    assert_eq!(client.response()["data"]["revision"], 18);
+
+    reply_pane_not_found(test.app_request());
+    let end = client.response();
+    assert_eq!(end["id"], "out");
+    assert_eq!(end["error"]["code"], "pane_not_found", "{end}");
+    assert_eq!(client.next_line(Instant::now() + RESPONSE_TIMEOUT), None);
+}
+
+#[test]
+fn output_changed_min_revision_skips_old_output_and_reports_newer() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    client.subscribe(
+        "min",
+        json!([{"type": "pane.output_changed", "pane_id": "pane_1", "min_revision": 20}]),
+    );
+    reply_to_revision_read(test.app_request(), 30);
+    client.assert_started("min");
+
+    // Output already past `min_revision` at subscription time is reported at once.
+    reply_to_revision_read(test.app_request(), 30);
+    assert_eq!(client.response()["data"]["revision"], 30);
+    reply_to_revision_read(test.app_request(), 30);
+    reply_to_revision_read(test.app_request(), 32);
+    assert_eq!(client.response()["data"]["revision"], 32);
 }

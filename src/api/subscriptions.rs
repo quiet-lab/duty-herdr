@@ -3,8 +3,8 @@ use regex::Regex;
 use crate::api::event_hub::EventHistoryError;
 use crate::api::schema::{
     ErrorBody, ErrorResponse, EventKind, Method, PaneAgentStatusChangedEvent,
-    PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription,
-    SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
+    PaneOutputChangedEvent, PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo,
+    Request, Subscription, SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
 };
 use crate::api::server::{dispatch_to_app_with_timeout, APP_RESPONSE_TIMEOUT};
 use crate::api::{ApiRequestSender, EventHub};
@@ -57,6 +57,15 @@ pub(super) struct ActiveAgentStatusChangedSubscription {
     request_prefix: String,
 }
 
+/// Samples the pane content revision at the connection poll cadence. A burst of
+/// output between two polls collapses into one event with the latest revision.
+pub(super) struct ActiveOutputChangedSubscription {
+    pane_id: String,
+    /// Highest revision already reported or excluded by `min_revision`.
+    last_revision: u64,
+    request_prefix: String,
+}
+
 pub(super) struct ActiveScrollChangedSubscription {
     pane_id: String,
     last_scroll: Option<PaneScrollInfo>,
@@ -100,6 +109,7 @@ pub(super) struct ActiveEventSubscription {
 pub(super) enum ActiveSubscription {
     Event(ActiveEventSubscription),
     OutputMatched(ActiveOutputMatchedSubscription),
+    OutputChanged(ActiveOutputChangedSubscription),
     AgentStatusChanged(Box<ActiveAgentStatusChangedSubscription>),
     ScrollChanged(ActiveScrollChangedSubscription),
 }
@@ -203,6 +213,22 @@ impl ActiveSubscription {
                     request_prefix: format!("{request_id}:sub:{index}"),
                 }))
             }
+            Subscription::PaneOutputChanged {
+                pane_id,
+                min_revision,
+            } => {
+                let probe = output_revision_read(
+                    format!("{request_id}:sub:{index}:probe"),
+                    &pane_id,
+                    api_tx,
+                )?;
+
+                Ok(Self::OutputChanged(ActiveOutputChangedSubscription {
+                    pane_id: probe.pane_id,
+                    last_revision: min_revision.unwrap_or(probe.revision),
+                    request_prefix: format!("{request_id}:sub:{index}"),
+                }))
+            }
             Subscription::PaneAgentStatusChanged {
                 pane_id,
                 agent_status,
@@ -256,6 +282,9 @@ impl ActiveSubscription {
             Self::Event(subscription) => subscription.poll(event_hub),
             Self::OutputMatched(subscription) => {
                 serde_json::to_value(subscription.poll(api_tx)?).ok()
+            }
+            Self::OutputChanged(subscription) => {
+                serde_json::to_value(subscription.poll(api_tx).ok()??).ok()
             }
             Self::AgentStatusChanged(subscription) => {
                 serde_json::to_value(subscription.poll(api_tx, event_hub)?).ok()
@@ -313,6 +342,17 @@ impl ActiveSubscription {
                     }
                 }
                 Ok(matching)
+            }
+            Self::OutputChanged(subscription) => {
+                // A closed pane ends the subscription; transient read failures are skipped.
+                match subscription.poll(api_tx) {
+                    Ok(Some(event)) => Ok(vec![
+                        serde_json::to_value(event).map_err(event_encoding_error)?
+                    ]),
+                    Ok(None) => Ok(Vec::new()),
+                    Err(error) if error.error.code == "pane_not_found" => Err(error.error),
+                    Err(_) => Ok(Vec::new()),
+                }
             }
             // These subscriptions sample current state, not retained event history.
             // Keep their existing cadence even when a lifecycle batch was nonempty.
@@ -391,6 +431,39 @@ impl ActiveOutputMatchedSubscription {
                 None
             }
         }
+    }
+}
+
+impl ActiveOutputChangedSubscription {
+    fn poll(
+        &mut self,
+        api_tx: &ApiRequestSender,
+    ) -> Result<Option<SubscriptionEventEnvelope>, ErrorResponse> {
+        let read = output_revision_read(
+            format!("{}:read", self.request_prefix),
+            &self.pane_id,
+            api_tx,
+        )?;
+        Ok(self.event_from_revision(read.pane_id, read.revision))
+    }
+
+    fn event_from_revision(
+        &mut self,
+        pane_id: String,
+        revision: u64,
+    ) -> Option<SubscriptionEventEnvelope> {
+        // An odd revision means the parser is mid-update; the next sample reports it.
+        if revision <= self.last_revision || !revision.is_multiple_of(2) {
+            return None;
+        }
+        self.last_revision = revision;
+        Some(SubscriptionEventEnvelope {
+            event: SubscriptionEventKind::PaneOutputChanged,
+            data: SubscriptionEventData::PaneOutputChanged(PaneOutputChangedEvent {
+                pane_id,
+                revision,
+            }),
+        })
     }
 }
 
@@ -571,6 +644,22 @@ impl ActiveScrollChangedSubscription {
     }
 }
 
+/// One-line read used only for its content revision.
+fn output_revision_read(
+    request_id: String,
+    pane_id: &str,
+    api_tx: &ApiRequestSender,
+) -> Result<crate::api::schema::PaneReadResult, ErrorResponse> {
+    pane_read(
+        request_id,
+        pane_id,
+        crate::api::schema::ReadSource::Recent,
+        Some(1),
+        true,
+        api_tx,
+    )
+}
+
 fn pane_read(
     request_id: String,
     pane_id: &str,
@@ -602,13 +691,15 @@ fn pane_read(
         },
     })?;
     if value.get("error").is_some() {
-        return serde_json::from_value(value).map_err(|_| ErrorResponse {
-            id: request_id,
-            error: ErrorBody {
-                code: "internal_error".into(),
-                message: "failed to decode pane read error".into(),
-            },
-        });
+        let response =
+            serde_json::from_value::<ErrorResponse>(value).map_err(|_| ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "internal_error".into(),
+                    message: "failed to decode pane read error".into(),
+                },
+            })?;
+        return Err(response);
     }
     serde_json::from_value(value["result"]["read"].clone()).map_err(|_| ErrorResponse {
         id: request_id,
@@ -858,6 +949,38 @@ mod tests {
             assert_eq!(subscription.last_sequence, event_hub.current_sequence());
             assert!(subscription.initial_event.is_none());
         }
+    }
+
+    #[test]
+    fn output_changed_subscription_collapses_series_and_honors_min_revision() {
+        let mut subscription = ActiveOutputChangedSubscription {
+            pane_id: "pane_1".into(),
+            last_revision: 4,
+            request_prefix: "test".into(),
+        };
+
+        assert!(subscription
+            .event_from_revision("pane_1".into(), 4)
+            .is_none());
+        assert!(subscription
+            .event_from_revision("pane_1".into(), 3)
+            .is_none());
+        // Odd revision: the parser is mid-update, so nothing is reported yet.
+        assert!(subscription
+            .event_from_revision("pane_1".into(), 9)
+            .is_none());
+        let event = subscription
+            .event_from_revision("pane_1".into(), 10)
+            .expect("output event");
+        assert_eq!(event.event, SubscriptionEventKind::PaneOutputChanged);
+        let SubscriptionEventData::PaneOutputChanged(data) = event.data else {
+            panic!("wrong event data");
+        };
+        assert_eq!(data.pane_id, "pane_1");
+        assert_eq!(data.revision, 10);
+        assert!(subscription
+            .event_from_revision("pane_1".into(), 10)
+            .is_none());
     }
 
     #[test]
