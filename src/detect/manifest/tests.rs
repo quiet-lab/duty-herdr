@@ -907,3 +907,100 @@ contains = ["active"]
 "#;
     assert!(parse_manifest(manifest).is_err());
 }
+
+// Screens captured from Claude Code v2.1.319 (vim editor mode, AskUserQuestion).
+// Only the resulting state is asserted: these tests guard the dialog-follow
+// contract, not rule identifiers.
+const RULE_LINE: &str = "──────────────────────────────────────────────────────────────";
+
+fn claude_dialog_screen(selected: usize, typed: &str, footer: &str) -> String {
+    let free = if selected == 3 {
+        format!("❯ 3. {typed}")
+    } else {
+        "  3. Type something.".to_string()
+    };
+    let row = |n: usize, label: &str| {
+        format!(
+            "{} {n}. {label}\n     {label} цвет\n",
+            if selected == n { "❯" } else { " " }
+        )
+    };
+    format!(
+        " ☐ Цвет\n\nЦвет?\n\n{}{}{free}\n{RULE_LINE}\n  4. Chat about this\n\n{footer}\n",
+        row(1, "Красный"),
+        row(2, "Синий"),
+    )
+}
+
+const FREE_INPUT_FOOTER: &str =
+    "-- INSERT -- · Enter to select · ↑/↓ to navigate · ctrl+g to edit in Neovide";
+const CHOICES_FOOTER: &str =
+    "Enter to select · ↑/↓ to navigate · ctrl+g to edit in Neovide · Esc to cancel";
+
+fn claude_state(screen: &str) -> AgentState {
+    explain(Agent::Claude, screen).state
+}
+
+#[test]
+fn claude_free_input_row_of_ask_user_question_is_blocked() {
+    with_manifest_dirs("claude-free-input-blocked", || {
+        for typed in ["Type something.", "abc", "несколько слов в поле"] {
+            let screen = claude_dialog_screen(3, typed, FREE_INPUT_FOOTER);
+            assert_eq!(claude_state(&screen), AgentState::Blocked, "{typed}");
+        }
+        // The same dialog without any footer line.
+        let screen = claude_dialog_screen(3, "abc", "");
+        assert_eq!(claude_state(&screen), AgentState::Blocked);
+    });
+}
+
+#[test]
+fn claude_choice_rows_of_ask_user_question_stay_blocked() {
+    with_manifest_dirs("claude-choice-rows-blocked", || {
+        for selected in [1, 2] {
+            let screen = claude_dialog_screen(selected, "Type something.", CHOICES_FOOTER);
+            assert_eq!(claude_state(&screen), AgentState::Blocked);
+        }
+    });
+}
+
+#[test]
+fn claude_plain_prompt_box_stays_idle() {
+    with_manifest_dirs("claude-plain-prompt-idle", || {
+        let screen = format!(
+            "● Готово.\n\n{RULE_LINE}\n❯ \n{RULE_LINE}\n  -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+        );
+        assert_eq!(claude_state(&screen), AgentState::Idle);
+        // A numbered list typed by the user is still an ordinary prompt.
+        let screen = format!(
+            "{RULE_LINE}\n❯ 3. купить молоко\n{RULE_LINE}\n  -- INSERT -- ⏵⏵ bypass permissions on (shift+tab to cycle)\n"
+        );
+        assert_eq!(claude_state(&screen), AgentState::Idle);
+    });
+}
+
+#[test]
+fn older_cached_remote_claude_manifest_does_not_hide_free_input_rule() {
+    with_manifest_dirs("claude-older-remote", || {
+        let path = crate::detect::manifest_update::remote_manifest_path(Agent::Claude);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "id = \"claude\"\nversion = \"2026.10.11.1\"\nmin_engine_version = 2\nupdated_at = \"2026-10-11T00:00:00Z\"\n\n[[rules]]\nid = \"remote_idle\"\nstate = \"idle\"\nregex = ['.']\n",
+        )
+        .unwrap();
+        reload_manifests();
+
+        let explain = explain(
+            Agent::Claude,
+            &claude_dialog_screen(3, "abc", FREE_INPUT_FOOTER),
+        );
+
+        assert_eq!(explain.state, AgentState::Blocked);
+        assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
+        assert_eq!(
+            explain.cached_remote_version.as_deref(),
+            Some("2026.10.11.1")
+        );
+    });
+}

@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.10.11.1"
+version = "2026.11.07.1"
 min_engine_version = 2
-updated_at = "2026-10-11T00:00:00Z"
+updated_at = "2026-11-07T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -105,6 +105,23 @@ visible_blocker = true
 # After the name divider, accept only a counted task panel with marked rows
 # and optional pending overflow. Free-form activity can be newer output (#4573).
 regex = ['(?i)(?:^|\n)[ \t]*enter\s+to\s+(?:confirm|select\s+·\s+(?:(?:tab/arrow|arrow)\s+keys|arrows|↑/↓|↑↓)\s+to\s+navigate)\s+·\s+esc\s+to\s+cancel[ \t]*\n(?:[ \t]*\n)*[ \t]*─{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*\z']
+
+[[rules]]
+id = "live_blocked_free_input"
+state = "blocked"
+priority = 980
+region = "whole_recent"
+visible_blocker = true
+# AskUserQuestion with the free-text row ("Type something") selected edits text
+# in place: the footer loses "Esc to cancel" (Esc leaves vim insert mode) and
+# gains an editor hint, e.g. "-- INSERT -- · Enter to select · ↑/↓ to navigate
+# · ctrl+g to edit in <editor>". live_blocked_form cannot see the dialog and
+# live_prompt_box reads the cursor row as an idle prompt. Gate on the dialog
+# shape that stays visible: the selected numbered row, then the horizontal rule,
+# then the numbered "Chat about this" row, then at most an "Enter to select"
+# footer line as the last content of the screen. An ordinary prompt box never
+# has a numbered row below its closing rule.
+regex = ['(?m)^[ \t]*\x{276F}[ \t]+\d+\.[ \t]+[^\n]*\n(?:[^\n]*\n){0,6}?[ \t]*\x{2500}{3,}[ \t]*\n[ \t]+\d+\.[ \t]+Chat about this[ \t]*(?:\n[ \t]*)*(?:[^\n]*Enter to select[^\n]*\n?)?(?:[ \t]*\n)*[ \t]*\z']
 
 [[rules]]
 id = "dynamic_workflow_prompt"
