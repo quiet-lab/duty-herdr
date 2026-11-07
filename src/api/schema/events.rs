@@ -72,6 +72,12 @@ pub enum Subscription {
         #[serde(default = "super::common::default_true")]
         strip_ansi: bool,
     },
+    #[serde(rename = "pane.output_changed")]
+    PaneOutputChanged {
+        pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_revision: Option<u64>,
+    },
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged {
         pane_id: String,
@@ -368,6 +374,8 @@ pub struct EventEnvelope {
 pub enum SubscriptionEventKind {
     #[serde(rename = "pane.output_matched")]
     PaneOutputMatched,
+    #[serde(rename = "pane.output_changed")]
+    PaneOutputChanged,
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged,
     #[serde(rename = "pane.scroll_changed")]
@@ -384,6 +392,7 @@ pub struct SubscriptionEventEnvelope {
 #[serde(untagged)]
 pub enum SubscriptionEventData {
     PaneOutputMatched(PaneOutputMatchedEvent),
+    PaneOutputChanged(PaneOutputChangedEvent),
     PaneAgentStatusChanged(PaneAgentStatusChangedEvent),
     ScrollChanged(PaneScrollChangedEvent),
 }
@@ -393,6 +402,13 @@ pub struct PaneOutputMatchedEvent {
     pub pane_id: String,
     pub matched_line: String,
     pub read: PaneReadResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneOutputChangedEvent {
+    pub pane_id: String,
+    /// Content revision of the pane output, the same counter as `pane.read` `revision`.
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

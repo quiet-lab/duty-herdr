@@ -4229,6 +4229,30 @@
             },
             {
               "properties": {
+                "min_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "pane_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "pane.output_changed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "agent_status": {
                   "anyOf": [
                     {
@@ -6500,6 +6524,24 @@
           ],
           "type": "object"
         },
+        "PaneOutputChangedEvent": {
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "revision": {
+              "description": "Content revision of the pane output, the same counter as `pane.read` `revision`.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "pane_id",
+            "revision"
+          ],
+          "type": "object"
+        },
         "PaneOutputMatchedEvent": {
           "properties": {
             "matched_line": {
@@ -6626,6 +6668,9 @@
               "$ref": "#/schemas/subscription_event/$defs/PaneOutputMatchedEvent"
             },
             {
+              "$ref": "#/schemas/subscription_event/$defs/PaneOutputChangedEvent"
+            },
+            {
               "$ref": "#/schemas/subscription_event/$defs/PaneAgentStatusChangedEvent"
             },
             {
@@ -6636,6 +6681,7 @@
         "SubscriptionEventKind": {
           "enum": [
             "pane.output_matched",
+            "pane.output_changed",
             "pane.agent_status_changed",
             "pane.scroll_changed"
           ],
