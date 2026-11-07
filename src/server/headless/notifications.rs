@@ -331,6 +331,43 @@ impl HeadlessServer {
                 }
                 false
             }
+            AppEvent::DetachedCommandFailed {
+                label,
+                status,
+                stderr_tail,
+            } => {
+                let title = match label {
+                    Some(label) => format!("{label}: command failed ({status})"),
+                    None => format!("command failed ({status})"),
+                };
+                let title = sanitize_notification_text(&title, 80)
+                    .unwrap_or_else(|| "command failed".to_string());
+                let body = sanitize_notification_text(stderr_tail, 240);
+                // Same limit as `notification.show`: a key held on a command
+                // that fails at once does not flood the clients.
+                let now = Instant::now();
+                let shown = !self.app.api_notification_rate_limited(now)
+                    && self.send_to_client_shells(ServerMessage::SemanticNotification(
+                        protocol::SemanticNotification {
+                            kind: protocol::SemanticNotificationKind::Custom,
+                            title,
+                            body,
+                            sound: None,
+                            agent: None,
+                            workspace_id: None,
+                            tab_id: None,
+                            pane_id: None,
+                            position: None,
+                        },
+                    ));
+                if shown {
+                    self.app.mark_api_notification_shown(now);
+                } else {
+                    debug!("dropped detached command failure notification");
+                }
+                self.app.handle_internal_event(ev);
+                false
+            }
             AppEvent::ClipboardWrite { content } => {
                 // Clipboard writes are client-local side effects. Forward them only to
                 // the foreground client instead of broadcasting to every attached client.

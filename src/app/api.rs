@@ -46,7 +46,9 @@ impl App {
                 self.handle_api_worktree_read_finished(*result);
                 changes_workspace
             }
-            ev @ AppEvent::TerminalBell { .. } => {
+            ev @ (AppEvent::TerminalBell { .. }
+            | AppEvent::DetachedCommandExited { .. }
+            | AppEvent::DetachedCommandFailed { .. }) => {
                 self.handle_internal_event(ev);
                 false
             }
@@ -120,6 +122,21 @@ impl App {
         } = ev
         {
             self.handle_git_status_refreshed(results, cache_updates);
+            return Vec::new();
+        }
+
+        if let AppEvent::DetachedCommandExited { key } = ev {
+            self.running_detached_commands.remove(&key);
+            return Vec::new();
+        }
+
+        if let AppEvent::DetachedCommandFailed {
+            label,
+            status,
+            stderr_tail,
+        } = ev
+        {
+            tracing::warn!(?label, %status, stderr = %stderr_tail, "detached command failed");
             return Vec::new();
         }
 
@@ -1252,6 +1269,9 @@ impl App {
             Method::PaneGet(target) => return self.handle_pane_get(request.id, target),
             Method::PaneFocus(target) => return self.handle_pane_focus(request.id, target),
             Method::PaneActivate(target) => return self.handle_pane_activate(request.id, target),
+            Method::PaneRunCommand(params) => {
+                return self.handle_pane_run_command(request.id, params);
+            }
             Method::PaneInputSet(params) => return self.handle_pane_input_set(request.id, params),
             Method::PaneLinkResolve(params) => {
                 return self.handle_pane_link_resolve(request.id, params);

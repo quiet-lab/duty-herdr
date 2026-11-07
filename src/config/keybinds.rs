@@ -2261,6 +2261,55 @@ command = "echo no"
     }
 
     #[test]
+    fn shell_command_binding_parses_and_empty_command_is_diagnosed() {
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "ctrl+alt+r"
+command = "my-script reopen"
+
+[[keys.command]]
+key = "ctrl+alt+e"
+command = "  "
+"#,
+        )
+        .unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let keybinds = config.keybinds();
+        assert_eq!(keybinds.custom_commands.len(), 1);
+        let command = &keybinds.custom_commands[0];
+        assert_eq!(command.action, CustomCommandAction::Shell);
+        assert_eq!(command.command, "my-script reopen");
+        assert_eq!(command.label, "ctrl+alt+r");
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.contains("empty custom command: keys.command[1].command")));
+    }
+
+    #[test]
+    fn duplicate_shell_command_keys_disable_the_later_binding() {
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "ctrl+alt+r"
+command = "first"
+
+[[keys.command]]
+key = "ctrl+alt+r"
+command = "second"
+"#,
+        )
+        .unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let keybinds = config.keybinds();
+        assert_eq!(keybinds.custom_commands.len(), 1);
+        assert_eq!(keybinds.custom_commands[0].command, "first");
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.contains("disabled keys.command[1].key")));
+    }
+
+    #[test]
     fn direct_custom_binding_conflicting_with_builtin_is_disabled() {
         let config: Config = toml::from_str(
             r#"

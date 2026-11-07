@@ -3128,6 +3128,21 @@
           ],
           "type": "string"
         },
+        "PaneRunCommandParams": {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id",
+            "command"
+          ],
+          "type": "object"
+        },
         "PaneScrollParams": {
           "properties": {
             "offset_from_bottom": {
@@ -6456,6 +6471,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.run_command",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneRunCommandParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -8644,6 +8675,23 @@
           ],
           "type": "object"
         },
+        "PaneRunCommandResult": {
+          "description": "Result of `pane.run_command`.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "started": {
+              "description": "Whether the command started; `false` while the same command for the\nsame pane is still running.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "pane_id",
+            "started"
+          ],
+          "type": "object"
+        },
         "PaneScrollInfo": {
           "properties": {
             "max_offset_from_bottom": {
@@ -9873,6 +9921,22 @@
               "required": [
                 "type",
                 "activation"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "run": {
+                  "$ref": "#/schemas/success_response/$defs/PaneRunCommandResult"
+                },
+                "type": {
+                  "const": "pane_run_command",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "run"
               ],
               "type": "object"
             },

@@ -267,6 +267,51 @@ mod tests {
 
     use super::*;
 
+    fn custom_command_keybinds(key: &str) -> Keybinds {
+        let config: crate::config::Config = toml::from_str(&format!(
+            "[[keys.command]]\nkey = {key}\ncommand = \"touch done\"\n"
+        ))
+        .unwrap();
+        config.keybinds()
+    }
+
+    fn direct_command_for(keybinds: &Keybinds, sequence: &str) -> Option<String> {
+        let key = crate::input::parse_terminal_key_sequence(sequence).expect(sequence);
+        resolve_custom_command(keybinds, &key, KeybindDispatch::Direct)
+            .map(|binding| binding.command)
+    }
+
+    #[test]
+    fn ctrl_alt_command_binding_matches_legacy_and_kitty_reports() {
+        let keybinds = custom_command_keybinds("\"ctrl+alt+r\"");
+        // Legacy ESC ^R: wezterm sends it for the physical R key on any layout.
+        assert_eq!(
+            direct_command_for(&keybinds, "\x1b\x12").as_deref(),
+            Some("touch done")
+        );
+        // Kitty protocol on a Latin layout.
+        assert_eq!(
+            direct_command_for(&keybinds, "\x1b[114;7u").as_deref(),
+            Some("touch done")
+        );
+        // Kitty protocol on a Russian layout keeps the layout character for
+        // Ctrl+Alt (it may be AltGr typing), so ctrl+alt+r does not match.
+        assert_eq!(direct_command_for(&keybinds, "\x1b[1082::114;7u"), None);
+        assert_eq!(direct_command_for(&keybinds, "\x1b[114;5u"), None);
+    }
+
+    #[test]
+    fn command_binding_with_layout_character_matches_kitty_russian_layout() {
+        let keybinds = custom_command_keybinds("[\"ctrl+alt+r\", \"ctrl+alt+\u{43a}\"]");
+        for sequence in ["\x1b\x12", "\x1b[114;7u", "\x1b[1082::114;7u"] {
+            assert_eq!(
+                direct_command_for(&keybinds, sequence).as_deref(),
+                Some("touch done"),
+                "{sequence:?}"
+            );
+        }
+    }
+
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {
         assert!(crate::config::Config::default()

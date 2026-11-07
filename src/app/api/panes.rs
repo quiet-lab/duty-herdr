@@ -11,10 +11,10 @@ use crate::api::schema::{
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
-    PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneRunCommandParams, PaneRunCommandResult, PaneScrollParams, PaneSelectionReadParams,
+    PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams,
+    PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode,
+    PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -504,6 +504,37 @@ impl App {
             return pane_not_found(id, &target.pane_id);
         };
         encode_success(id, ResponseResult::PaneInfo { pane })
+    }
+
+    /// Runs a shell command outside panes with the environment of a pane.
+    pub(super) fn handle_pane_run_command(
+        &mut self,
+        id: String,
+        params: PaneRunCommandParams,
+    ) -> String {
+        if params.command.trim().is_empty() {
+            return encode_error(id, "invalid_params", "command is empty");
+        }
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let (env, cwd) = self.detached_command_env(ws_idx, pane_id);
+        let key = format!("pane:{public_pane_id}:{}", params.command);
+        match self.spawn_detached_command(key, &params.command, None, env, cwd) {
+            Ok(started) => encode_success(
+                id,
+                ResponseResult::PaneRunCommand {
+                    run: PaneRunCommandResult {
+                        pane_id: public_pane_id,
+                        started,
+                    },
+                },
+            ),
+            Err(err) => encode_error(id, "command_failed", err.to_string()),
+        }
     }
 
     /// Focuses a pane inside its workspace without moving any client to it.

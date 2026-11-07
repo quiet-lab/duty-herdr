@@ -208,7 +208,14 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # navigate_pane_right = "l"     # right arrow always focuses the pane to the right
 
 # Custom commands use the same binding syntax.
-# type = "shell" runs detached in the background.
+# type = "shell" runs detached in the background with the focused pane's
+# environment (HERDR_ENV, HERDR_WORKSPACE_ID, HERDR_TAB_ID, HERDR_PANE_ID) in
+# the pane's directory. A press while the binding's command still runs is ignored;
+# a non-zero exit shows a notification with the end of stderr.
+# [[keys.command]]
+# key = "ctrl+alt+r"
+# command = "my-script reopen"
+#
 # type = "pane" opens a temporary pane and closes it when the command exits.
 # type = "popup" opens a session-modal terminal without changing the tab layout.
 # Popup width and height accept terminal cells or percentages such as "80%".

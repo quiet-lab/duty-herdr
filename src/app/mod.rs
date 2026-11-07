@@ -150,6 +150,10 @@ pub struct App {
     pane_exit_checkpoint_pending: bool,
     server_hangup_probe: fn() -> bool,
     pub(crate) detached_process_children: Vec<std::process::Child>,
+    /// Keys of detached shell commands still running (`key:<binding>` or
+    /// `pane:<pane>:<command>`); a second run under the same key is skipped
+    /// until the first exits.
+    pub(crate) running_detached_commands: std::collections::HashSet<String>,
     tab_bar_status_generation: u64,
     tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
     tab_bar_commands: Vec<tab_bar_status::TabBarCommandRuntime>,
@@ -675,6 +679,7 @@ impl App {
             #[cfg(test)]
             server_hangup_probe: || false,
             detached_process_children: Vec::new(),
+            running_detached_commands: std::collections::HashSet::new(),
             tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),
             tab_bar_commands: Vec::new(),

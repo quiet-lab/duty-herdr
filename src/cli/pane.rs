@@ -306,6 +306,13 @@ mod tests {
                 json!({"mode": "toggle"}),
             ),
             (
+                "run-command",
+                vec!["w2:p3", "my-script", "reopen"],
+                "cli:pane:run-command",
+                "pane.run_command",
+                json!({"pane_id": "w2:p3", "command": "my-script reopen"}),
+            ),
+            (
                 "activate",
                 vec!["w2:p3"],
                 "cli:pane:activate",
