@@ -429,21 +429,22 @@ fn follow_blocked_rejected_switch_ends_the_chain_quietly() {
 }
 
 #[test]
-fn follow_blocked_dialog_asking_again_between_snapshots_moves_on() {
+fn follow_blocked_sequence_change_while_blocked_is_not_an_answer() {
     let mut scenario = Scenario::new(true);
     scenario.set_status("pane_2", AgentStatus::Blocked);
     let switch = scenario.publish();
     scenario.apply(&switch);
     scenario.set_status("pane_3", AgentStatus::Blocked);
     assert!(scenario.publish().is_empty());
-    // pane_2 is answered and asks the next question before the client sees a snapshot.
-    scenario.set_status("pane_2", AgentStatus::Working);
-    scenario.set_status("pane_2", AgentStatus::Blocked);
-    assert!(
-        scenario.publish().is_empty(),
-        "the user stays on the follow-up question"
-    );
-    // Answering the follow-up question is an answer of the followed pane.
+    // A card of several questions: pane_2 stays blocked while its sequence changes.
+    for _ in 0..3 {
+        scenario.set_status("pane_2", AgentStatus::Blocked);
+        assert!(
+            scenario.publish().is_empty(),
+            "the user stays on the card until it leaves blocked"
+        );
+    }
+    // Leaving blocked is the answer.
     scenario.set_status("pane_2", AgentStatus::Working);
     let next = scenario.publish();
     assert_eq!(next, pane_focus("pane_3"));
@@ -453,7 +454,24 @@ fn follow_blocked_dialog_asking_again_between_snapshots_moves_on() {
 }
 
 #[test]
-fn follow_blocked_dialog_asking_again_moves_behind_the_queue() {
+fn follow_blocked_dialog_during_a_card_waits_for_it_to_leave_blocked() {
+    let mut scenario = Scenario::new(true);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    let switch = scenario.publish();
+    scenario.apply(&switch);
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    assert!(scenario.publish().is_empty());
+    // A second dialog appears between questions of the first card.
+    scenario.set_status("pane_3", AgentStatus::Blocked);
+    assert!(scenario.publish().is_empty());
+    scenario.set_status("pane_2", AgentStatus::Blocked);
+    assert!(scenario.publish().is_empty());
+    scenario.set_status("pane_2", AgentStatus::Working);
+    assert_eq!(scenario.publish(), pane_focus("pane_3"));
+}
+
+#[test]
+fn follow_blocked_waiting_dialog_keeps_its_place_when_its_sequence_changes() {
     let mut scenario = Scenario::new(true);
     scenario.set_status("pane_2", AgentStatus::Blocked);
     let switch = scenario.publish();
@@ -461,15 +479,11 @@ fn follow_blocked_dialog_asking_again_moves_behind_the_queue() {
     scenario.set_status("pane_3", AgentStatus::Blocked);
     scenario.set_status("pane_4", AgentStatus::Blocked);
     assert!(scenario.publish().is_empty());
-    // pane_3 asks again while waiting: it goes behind pane_4.
-    scenario.set_status("pane_3", AgentStatus::Working);
+    // pane_3 moves to its next question while waiting: it stays ahead of pane_4.
     scenario.set_status("pane_3", AgentStatus::Blocked);
-    assert!(
-        scenario.publish().is_empty(),
-        "the user is answering pane_2"
-    );
+    assert!(scenario.publish().is_empty());
     scenario.set_status("pane_2", AgentStatus::Working);
-    assert_eq!(scenario.publish(), pane_focus("pane_4"));
+    assert_eq!(scenario.publish(), pane_focus("pane_3"));
 }
 
 #[test]

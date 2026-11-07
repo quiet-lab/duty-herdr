@@ -9,9 +9,11 @@
 //! Rules:
 //! - A pane counts as a dialog while it is a detected agent in `blocked` whose pane and
 //!   workspace are present in the snapshot.
-//! - The queue holds dialogs in the order they entered `blocked` (FIFO by
-//!   `state_change_seq`). A pane whose sequence changed while it stayed `blocked` (answered
-//!   and asking again between two snapshots) counts as leaving and entering again.
+//! - The queue holds dialogs in the order they entered `blocked` (FIFO; panes entering in one
+//!   snapshot are ordered by `state_change_seq`). A pane that stays `blocked` keeps its place and, when followed,
+//!   stays followed even if its sequence changes: a card of several questions stays
+//!   `blocked` between them, so only leaving `blocked` (or vanishing from the snapshot)
+//!   is an answer.
 //! - The first snapshot of an endpoint boot is a baseline: dialogs already open are queued
 //!   without switching; a dialog in the focused workspace becomes the followed pane.
 //! - Only two events switch: a pane enters `blocked`, or the followed pane leaves it.
@@ -53,7 +55,6 @@ struct FollowedPane {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Dialog {
     workspace_id: String,
-    state_change_seq: u64,
 }
 
 #[derive(Debug, Default)]
@@ -171,12 +172,11 @@ impl FollowBlocked {
         if !same_scope {
             self.reset();
             self.scope = Some((endpoint_id.clone(), snapshot.boot_id.clone()));
-            for (pane_id, workspace_id, state_change_seq) in dialogs {
+            for (pane_id, workspace_id, _) in dialogs {
                 self.blocked.insert(
                     pane_id.to_owned(),
                     Dialog {
                         workspace_id: workspace_id.to_owned(),
-                        state_change_seq,
                     },
                 );
                 self.queue.push_back(pane_id.to_owned());
@@ -188,42 +188,26 @@ impl FollowBlocked {
         }
 
         let unchanged = dialogs.len() == self.blocked.len()
-            && dialogs.iter().all(|(pane_id, workspace_id, seq)| {
-                self.blocked.get(*pane_id).is_some_and(|dialog| {
-                    dialog.workspace_id == *workspace_id && dialog.state_change_seq == *seq
-                })
+            && dialogs.iter().all(|(pane_id, workspace_id, _)| {
+                self.blocked
+                    .get(*pane_id)
+                    .is_some_and(|dialog| dialog.workspace_id == *workspace_id)
             });
         let mut entered = false;
         let mut answered = false;
         if !unchanged {
             let mut current = HashMap::with_capacity(dialogs.len());
-            for (pane_id, workspace_id, state_change_seq) in dialogs {
-                match self.blocked.get(pane_id) {
-                    Some(previous) if previous.state_change_seq == state_change_seq => {}
-                    previous => {
-                        // A new dialog, or the same pane answered and asking again between
-                        // two snapshots: it goes to the back of the queue.
-                        entered = true;
-                        if previous.is_some() {
-                            self.queue.retain(|queued| queued != pane_id);
-                            if self
-                                .followed
-                                .as_ref()
-                                .is_some_and(|followed| followed.pane_id == pane_id)
-                            {
-                                self.followed = None;
-                                self.pending_request_id = None;
-                                answered = true;
-                            }
-                        }
-                        self.queue.push_back(pane_id.to_owned());
-                    }
+            for (pane_id, workspace_id, _) in dialogs {
+                // A pane already blocked keeps its place whatever its sequence did: a card
+                // of several questions changes it between questions.
+                if !self.blocked.contains_key(pane_id) {
+                    entered = true;
+                    self.queue.push_back(pane_id.to_owned());
                 }
                 current.insert(
                     pane_id.to_owned(),
                     Dialog {
                         workspace_id: workspace_id.to_owned(),
-                        state_change_seq,
                     },
                 );
             }
