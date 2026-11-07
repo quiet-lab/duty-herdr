@@ -144,6 +144,10 @@ pub struct InputState {
     pub modify_other_keys: bool,
     #[serde(default)]
     pub color_scheme_reporting: bool,
+    /// DEC private mode 2048: the child learns its size from in-band reports
+    /// and may ignore SIGWINCH, so an imported pane must keep reporting.
+    #[serde(default)]
+    pub in_band_size_reports: bool,
 }
 
 #[cfg(test)]
@@ -1628,6 +1632,10 @@ impl GhosttyPaneTerminal {
             crate::ghostty::MODE_COLOR_SCHEME_REPORT,
             input_state.color_scheme_reporting,
         );
+        let _ = core.terminal.mode_set(
+            crate::ghostty::MODE_IN_BAND_SIZE_REPORTS,
+            input_state.in_band_size_reports,
+        );
 
         core.terminal
             .write(b"\x1b[?9l\x1b[?1000l\x1b[?1002l\x1b[?1003l");
@@ -1981,6 +1989,11 @@ impl GhosttyPaneTerminal {
                 .terminal
                 .mode_get(crate::ghostty::MODE_COLOR_SCHEME_REPORT)
                 .ok()?,
+            // Optional mode: a failed query must not drop the other modes.
+            in_band_size_reports: core
+                .terminal
+                .mode_get(crate::ghostty::MODE_IN_BAND_SIZE_REPORTS)
+                .unwrap_or(false),
         })
     }
 
@@ -3703,6 +3716,7 @@ mod tests {
             mouse_alternate_scroll: false,
             modify_other_keys: false,
             color_scheme_reporting: false,
+            in_band_size_reports: false,
         }
         .plain_page_keys_use_host_scrollback());
     }
@@ -5222,6 +5236,7 @@ mod tests {
             mouse_alternate_scroll: true,
             modify_other_keys: true,
             color_scheme_reporting: true,
+            in_band_size_reports: true,
         });
 
         assert_eq!(
@@ -5236,6 +5251,7 @@ mod tests {
                 mouse_alternate_scroll: true,
                 modify_other_keys: true,
                 color_scheme_reporting: true,
+                in_band_size_reports: true,
             })
         );
         assert_eq!(pane.modify_other_keys_level(), 2);
@@ -6197,6 +6213,36 @@ mod tests {
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b[48;24;92;432;828t")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handoff_seeded_in_band_size_reports_keep_reporting_resizes() {
+        let (tx, _rx) = mpsc::channel(4);
+        let source = GhosttyPaneTerminal::new(
+            crate::ghostty::Terminal::new(112, 12, 0).unwrap(),
+            tx.clone(),
+        )
+        .unwrap();
+        let pane_id = PaneId::from_raw(1);
+        source.process_pty_bytes(pane_id, 0, b"\x1b[?1049h\x1b[?2048h", &tx);
+        let exported = source.input_state().expect("input state");
+        assert!(exported.in_band_size_reports);
+
+        let imported =
+            GhosttyPaneTerminal::new(crate::ghostty::Terminal::new(112, 12, 0).unwrap(), tx)
+                .unwrap();
+        imported.seed_handoff_input_state(exported);
+
+        let responses = imported.resize(5, 112, 9, 18);
+        assert_eq!(
+            responses,
+            vec![crate::pty::actor::in_band_size_report(5, 112, 9, 18).unwrap()]
+        );
+        assert_eq!(
+            responses,
+            vec![Bytes::from_static(b"\x1b[48;5;112;90;1008t")]
         );
     }
 

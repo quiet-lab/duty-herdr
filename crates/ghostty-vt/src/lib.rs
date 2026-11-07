@@ -75,6 +75,36 @@ impl GhosttyResultExt for ffi::GhosttyResult {
     }
 }
 
+/// Encode the in-band size report (DEC mode 2048) libghostty-vt sends on resize.
+pub fn encode_in_band_size_report(
+    rows: u16,
+    cols: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Option<Vec<u8>> {
+    let size = ffi::GhosttySizeReportSize {
+        rows,
+        columns: cols,
+        cell_width: cell_width_px,
+        cell_height: cell_height_px,
+    };
+    let mut buf = [0u8; 64];
+    let mut written = 0usize;
+    // SAFETY: buf is a valid writable buffer of buf.len() bytes and written is
+    // a valid out pointer; size is a plain value.
+    let result = unsafe {
+        ffi::ghostty_size_report_encode(
+            ffi::GhosttySizeReportStyle_GHOSTTY_SIZE_REPORT_MODE_2048,
+            size,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+            &mut written,
+        )
+    };
+    (result == ffi::GhosttyResult_GHOSTTY_SUCCESS && written <= buf.len())
+        .then(|| buf[..written].to_vec())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dirty {
     Clean,
@@ -197,6 +227,7 @@ pub const MODE_BRACKETED_PASTE: u16 = 2004;
 pub const MODE_SYNCHRONIZED_OUTPUT: u16 = 2026;
 pub const MODE_GRAPHEME_CLUSTER: u16 = 2027;
 pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
+pub const MODE_IN_BAND_SIZE_REPORTS: u16 = 2048;
 // These are documented in vendor/libghostty-vt/include/ghostty/vt/terminal.h,
 // but the generated bindings do not currently expose named constants for them.
 const TERMINAL_DATA_COLOR_FOREGROUND: ffi::GhosttyTerminalData = 18;

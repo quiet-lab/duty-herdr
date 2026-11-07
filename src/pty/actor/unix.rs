@@ -56,10 +56,30 @@ struct PtyResizeRequest {
     terminal_responses: Vec<Bytes>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PtyNudgeRequest {
+    resize: PtyResize,
+    /// The child enabled DEC mode 2048 and learns its size from in-band
+    /// reports instead of SIGWINCH.
+    in_band_size_reports: bool,
+}
+
+/// In-band size report (DEC mode 2048) encoded by libghostty-vt, the same
+/// bytes the terminal sends on resize.
+pub(crate) fn in_band_size_report(
+    rows: u16,
+    cols: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Option<Bytes> {
+    crate::ghostty::encode_in_band_size_report(rows, cols, cell_width_px, cell_height_px)
+        .map(Bytes::from)
+}
+
 #[derive(Default)]
 struct SharedPtyControls {
     resize: Option<PtyResizeRequest>,
-    nudge: Option<PtyResize>,
+    nudge: Option<PtyNudgeRequest>,
     terminal_responses: Vec<Bytes>,
 }
 
@@ -307,17 +327,21 @@ impl PtyIoActorHandle {
         cols: u16,
         cell_width_px: u32,
         cell_height_px: u32,
+        in_band_size_reports: bool,
     ) {
         {
             let mut controls = self
                 .controls
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            controls.nudge = Some(PtyResize {
-                rows,
-                cols,
-                cell_width_px,
-                cell_height_px,
+            controls.nudge = Some(PtyNudgeRequest {
+                resize: PtyResize {
+                    rows,
+                    cols,
+                    cell_width_px,
+                    cell_height_px,
+                },
+                in_band_size_reports,
             });
         }
         self.wake_actor();
@@ -971,11 +995,16 @@ impl PtyIoActorRunner {
         if self.state == ActorState::Released {
             return;
         }
-        if let Some(request) = resize {
+        if let Some(request) = resize.as_ref() {
             self.resize(request.resize);
-            self.enqueue_terminal_responses(request.terminal_responses);
+            self.enqueue_terminal_responses(request.terminal_responses.clone());
         }
-        if let Some(nudge) = nudge {
+        if let Some(mut nudge) = nudge {
+            // The nudge was requested with the size current at that moment; a
+            // resize taken in the same batch is newer and must stay final.
+            if let Some(request) = resize.as_ref() {
+                nudge.resize = request.resize;
+            }
             self.nudge(nudge);
         }
         self.enqueue_terminal_responses(terminal_responses);
@@ -1243,10 +1272,11 @@ impl PtyIoActorRunner {
         ));
     }
 
-    fn nudge(&mut self, resize: PtyResize) {
+    fn nudge(&mut self, request: PtyNudgeRequest) {
         if self.state == ActorState::Released {
             return;
         }
+        let resize = request.resize;
         let nudge = if resize.rows > 2 {
             (
                 resize.rows - 1,
@@ -1279,6 +1309,13 @@ impl PtyIoActorRunner {
             nudge.2,
             nudge.3,
         ));
+        if request.in_band_size_reports {
+            if let Some(report) = in_band_size_report(nudge.0, nudge.1, nudge.2, nudge.3) {
+                self.enqueue_write(report);
+            }
+        }
+        // FIXME: fixed pause between the two SIGWINCH sizes (upstream code);
+        // the child gives no event that it has handled the first size.
         std::thread::sleep(Duration::from_millis(30));
         self.log_resize_result(fd::resize_pty_fd(
             self.file.as_raw_fd(),
@@ -1287,6 +1324,16 @@ impl PtyIoActorRunner {
             resize.cell_width_px,
             resize.cell_height_px,
         ));
+        if request.in_band_size_reports {
+            if let Some(report) = in_band_size_report(
+                resize.rows,
+                resize.cols,
+                resize.cell_width_px,
+                resize.cell_height_px,
+            ) {
+                self.enqueue_write(report);
+            }
+        }
     }
 
     fn log_resize_result(&self, result: std::io::Result<()>) {
@@ -1385,6 +1432,66 @@ mod tests {
             poll_observer: None,
         };
         (runner, peer)
+    }
+
+    #[test]
+    fn handoff_nudge_sends_in_band_reports_ending_at_newest_resize() {
+        let (mut runner, _peer) = actor_runner_for_unit_test();
+        {
+            let mut controls = runner.controls.lock().expect("controls lock");
+            controls.nudge = Some(PtyNudgeRequest {
+                resize: PtyResize {
+                    rows: 13,
+                    cols: 136,
+                    cell_width_px: 9,
+                    cell_height_px: 18,
+                },
+                in_band_size_reports: true,
+            });
+            controls.resize = Some(PtyResizeRequest {
+                resize: PtyResize {
+                    rows: 10,
+                    cols: 136,
+                    cell_width_px: 9,
+                    cell_height_px: 18,
+                },
+                terminal_responses: vec![Bytes::from_static(b"resize-report")],
+            });
+        }
+
+        runner.apply_pending_controls();
+
+        let writes: Vec<Bytes> = runner
+            .pending_writes
+            .iter()
+            .map(|write| write.bytes.clone())
+            .collect();
+        assert_eq!(
+            writes,
+            vec![
+                Bytes::from_static(b"resize-report"),
+                Bytes::from_static(b"\x1b[48;9;136;162;1224t"),
+                Bytes::from_static(b"\x1b[48;10;136;180;1224t"),
+            ]
+        );
+    }
+
+    #[test]
+    fn handoff_nudge_without_in_band_mode_writes_nothing() {
+        let (mut runner, _peer) = actor_runner_for_unit_test();
+        runner.controls.lock().expect("controls lock").nudge = Some(PtyNudgeRequest {
+            resize: PtyResize {
+                rows: 13,
+                cols: 136,
+                cell_width_px: 9,
+                cell_height_px: 18,
+            },
+            in_band_size_reports: false,
+        });
+
+        runner.apply_pending_controls();
+
+        assert!(runner.pending_writes.is_empty());
     }
 
     #[test]
@@ -2110,7 +2217,7 @@ mod tests {
 
         handle.resize(20, 80, 8, 16, vec![Bytes::from_static(b"old")]);
         handle.resize(40, 120, 9, 18, vec![Bytes::from_static(b"new")]);
-        handle.nudge_child_redraw_after_handoff(41, 121, 10, 20);
+        handle.nudge_child_redraw_after_handoff(41, 121, 10, 20, true);
         handle.write_terminal_response(|| Some(Bytes::from_static(b"response")));
 
         let controls = controls.lock().expect("controls lock");
@@ -2128,11 +2235,14 @@ mod tests {
         );
         assert_eq!(
             controls.nudge,
-            Some(PtyResize {
-                rows: 41,
-                cols: 121,
-                cell_width_px: 10,
-                cell_height_px: 20,
+            Some(PtyNudgeRequest {
+                resize: PtyResize {
+                    rows: 41,
+                    cols: 121,
+                    cell_width_px: 10,
+                    cell_height_px: 20,
+                },
+                in_band_size_reports: true,
             })
         );
         assert_eq!(

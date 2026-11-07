@@ -1738,10 +1738,17 @@ impl PaneRuntimeIo {
         cols: u16,
         cell_width_px: u32,
         cell_height_px: u32,
+        in_band_size_reports: bool,
     ) {
         match self {
             PaneRuntimeIo::Actor(actor) => {
-                actor.nudge_child_redraw_after_handoff(rows, cols, cell_width_px, cell_height_px);
+                actor.nudge_child_redraw_after_handoff(
+                    rows,
+                    cols,
+                    cell_width_px,
+                    cell_height_px,
+                    in_band_size_reports,
+                );
             }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { .. } => {}
@@ -3540,8 +3547,19 @@ impl PaneRuntime {
     #[cfg(unix)]
     pub fn nudge_child_redraw_after_handoff(&self) {
         let (rows, cols, cell_width_px, cell_height_px) = self.current_size.get();
-        self.io
-            .nudge_child_redraw_after_handoff(rows, cols, cell_width_px, cell_height_px);
+        // A child in mode 2048 ignores SIGWINCH, so the nudge must reach it
+        // as in-band size reports.
+        let in_band_size_reports = self
+            .terminal
+            .input_state()
+            .is_some_and(|state| state.in_band_size_reports);
+        self.io.nudge_child_redraw_after_handoff(
+            rows,
+            cols,
+            cell_width_px,
+            cell_height_px,
+            in_band_size_reports,
+        );
     }
 
     /// Scroll up by N lines (into scrollback history).
@@ -5490,7 +5508,7 @@ mod tests {
         let runtime = PaneRuntime::test_with_screen_bytes(
             80,
             24,
-            b"\x1b[>5u\x1b[>4;2m\x1b[?1h\x1b[?2004h\x1b[?1004h\x1b[?1002h\x1b[?1006h\x1b[?2031h",
+            b"\x1b[>5u\x1b[>4;2m\x1b[?1h\x1b[?2004h\x1b[?1004h\x1b[?1002h\x1b[?1006h\x1b[?2031h\x1b[?2048h",
         );
 
         runtime.test_process_pty_bytes("\x1b]2;✳ 修复🙂标题\x1b\\".as_bytes());
@@ -5512,6 +5530,7 @@ mod tests {
                 mouse_alternate_scroll: true,
                 modify_other_keys: true,
                 color_scheme_reporting: true,
+                in_band_size_reports: true,
             })
         );
     }
