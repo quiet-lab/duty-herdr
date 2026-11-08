@@ -1426,6 +1426,10 @@ pub fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
 
 pub fn terminal_key_matches_combo(key: &TerminalKey, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code, key.modifiers, key.shifted_codepoint, combo)
+        // duty: a chord on a non-US layout also matches its physical key.
+        || key.base_layout_key().is_some_and(|base| {
+            key_parts_match_combo(KeyCode::Char(base), key.modifiers, None, combo)
+        })
 }
 
 fn key_parts_match_combo(
@@ -2091,6 +2095,57 @@ navigate_pane_down = "ctrl+\u00f6"
         // German layout: "\u{f6}" on the physical `;` key.
         let key = crate::input::parse_terminal_key_sequence("\x1b[246::59;5u").unwrap();
         assert!(keybinds.navigate.pane_down.matches_direct_key(&key));
+    }
+
+    #[test]
+    fn multi_modifier_keybinds_match_non_us_layout_chords_by_base_key() {
+        // duty: Ctrl+Alt chords on a Russian layout match their physical key.
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "ctrl+alt+shift+slash"
+type = "shell"
+command = "true"
+
+[[keys.command]]
+key = "ctrl+alt+r"
+type = "shell"
+command = "true"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        let help = &keybinds.custom_commands[0].bindings;
+        let reopen = &keybinds.custom_commands[1].bindings;
+        let key = |sequence: &str| crate::input::parse_terminal_key_sequence(sequence).unwrap();
+
+        // WezTerm on a Russian layout: Shift on the `/` key types `,`.
+        assert!(help.matches_direct_key(&key("\x1b[44::47;8u")));
+        // Kitty's form of the same chord: `.` with shifted `,`.
+        assert!(help.matches_direct_key(&key("\x1b[46:44:47;8u")));
+        // The US layout keeps matching.
+        assert!(help.matches_direct_key(&key("\x1b[47:63;8u")));
+        // Ctrl+Alt+\u{43a} is the `r` key; Super+Alt is another chord.
+        assert!(reopen.matches_direct_key(&key("\x1b[1082::114;7u")));
+        assert!(!reopen.matches_direct_key(&key("\x1b[1082::114;11u")));
+        // Without the base-layout field the physical key is unknown.
+        assert!(!reopen.matches_direct_key(&key("\x1b[1082;7u")));
+        // A chord that typed text is typing, not a shortcut.
+        assert!(!reopen.matches_direct_key(&key("\x1b[1082::114;7;1082u")));
+        // A Latin layout keeps its own letters: Polish AltGr+e types \u{119}.
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "ctrl+alt+e"
+type = "shell"
+command = "true"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert!(!keybinds.custom_commands[0]
+            .bindings
+            .matches_direct_key(&key("\x1b[281::101;7u")));
     }
 
     #[test]
