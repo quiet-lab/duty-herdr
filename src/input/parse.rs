@@ -86,13 +86,43 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
         modifiers |= KeyModifiers::SHIFT;
     }
 
+    let base_layout_key = keybinding_base_layout_key(
+        code,
+        modifiers,
+        base_layout_codepoint,
+        associated_text.is_some(),
+    );
     let mut key = TerminalKey::new(code, modifiers)
         .with_kind(kind)
-        .with_layout_key(layout_key);
+        .with_layout_key(layout_key)
+        .with_base_layout_key(base_layout_key);
     if let Some(shifted_codepoint) = shifted_codepoint {
         key = key.with_shifted_codepoint(shifted_codepoint);
     }
     Some(key.with_generated_text(associated_text))
+}
+
+/// duty: the base-layout key keybindings fall back to for a chord typed on a
+/// non-US layout. Only chords with Ctrl, Alt or Super that typed no text, on
+/// a non-Latin layout character or on punctuation that a layout moved to
+/// another punctuation key (Shift+/ is `,` on a Russian layout). Latin
+/// letters and AltGr symbols on letter or digit keys keep their own identity.
+fn keybinding_base_layout_key(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    base_layout_codepoint: Option<u32>,
+    typed_text: bool,
+) -> Option<char> {
+    let KeyCode::Char(ch) = code else {
+        return None;
+    };
+    let base = base_layout_codepoint.and_then(char::from_u32)?;
+    let chord =
+        modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+    let moved_key = is_non_latin_script(ch)
+        && (base.is_ascii_alphanumeric() || base.is_ascii_punctuation())
+        || ch.is_ascii_punctuation() && base.is_ascii_punctuation();
+    (chord && !typed_text && base != ch && moved_key).then_some(base)
 }
 
 /// Physical keys Ghostty sends a control byte for when Ctrl is held on a
@@ -955,6 +985,8 @@ mod tests {
             assert_ne!(*sequence, stripped);
             let key = parse_terminal_key_sequence(sequence).unwrap();
             let layout_key = parse_terminal_key_sequence(&stripped).unwrap();
+            // duty: the keybinding fallback key is the only difference.
+            let key = key.with_base_layout_key(None);
             assert_eq!(key, layout_key, "{sequence:?}");
             for pane_mode in [&b""[..], b"\x1b[>1u", b"\x1b[>5u", b"\x1b[>31u"] {
                 assert_eq!(

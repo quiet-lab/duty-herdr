@@ -294,9 +294,13 @@ mod tests {
             direct_command_for(&keybinds, "\x1b[114;7u").as_deref(),
             Some("touch done")
         );
-        // Kitty protocol on a Russian layout keeps the layout character for
-        // Ctrl+Alt (it may be AltGr typing), so ctrl+alt+r does not match.
-        assert_eq!(direct_command_for(&keybinds, "\x1b[1082::114;7u"), None);
+        // duty: kitty protocol on a Russian layout reports the layout
+        // character with the base-layout key; the binding matches that key.
+        assert_eq!(
+            direct_command_for(&keybinds, "\x1b[1082::114;7u").as_deref(),
+            Some("touch done")
+        );
+        assert_eq!(direct_command_for(&keybinds, "\x1b[1082;7u"), None);
         assert_eq!(direct_command_for(&keybinds, "\x1b[114;5u"), None);
     }
 

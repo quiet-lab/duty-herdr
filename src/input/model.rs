@@ -84,6 +84,12 @@ pub struct TerminalKey {
     /// identity, so a press and its release pair exactly even when a modifier
     /// let go first changes which of the two the host report resolves to.
     layout_key: Option<char>,
+    /// duty: the base-layout key of a modified chord typed on a non-US
+    /// layout (Ctrl+Alt+\u{43a} is reported with base `r`). Client side only:
+    /// keybindings fall back to it, so Ctrl+Alt chords match their physical
+    /// key on a Russian layout as Ctrl chords already do. Pane input keeps
+    /// the layout character.
+    base_layout_key: Option<char>,
     source: KeySource,
 }
 
@@ -99,6 +105,7 @@ impl TerminalKey {
             physical_identity_hint: false,
             windows_dead_key: false,
             layout_key: None,
+            base_layout_key: None,
             source: KeySource::Synthesized,
         }
     }
@@ -110,6 +117,15 @@ impl TerminalKey {
 
     pub(crate) fn layout_key(&self) -> Option<char> {
         self.layout_key
+    }
+
+    pub(crate) fn with_base_layout_key(mut self, key: Option<char>) -> Self {
+        self.base_layout_key = key;
+        self
+    }
+
+    pub(crate) fn base_layout_key(&self) -> Option<char> {
+        self.base_layout_key
     }
 
     pub fn with_kind(mut self, kind: crossterm::event::KeyEventKind) -> Self {
