@@ -1006,7 +1006,7 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
                     return true;
                 }
                 input
-                    .write_all(b"printf 'LOCAL_%s\\n' DIRECT_READY\r")
+                    .write_all(b"echo LOCAL_$@DIRECT_READY\r")
                     .unwrap();
                 false
             }), "Local must accept input without waiting for SSH (remote selected: {select_remote}): {}", read_output(&output));
@@ -1028,6 +1028,12 @@ fn federated_launch_opens_local_directly_while_saved_ssh_is_unavailable() {
 /// attempts plus activation retries (each activation phase has its own deadline)
 /// before it is usable. These budgets only slow the failure path: every
 /// `wait_until` below returns as soon as its condition holds.
+///
+/// Input written while the client still holds pane input closed is dropped, and a
+/// write that straddles the moment input opens reaches the shell without its head.
+/// Retried shell commands therefore carry no quotes or other multi-line syntax: any
+/// fragment or concatenation of them still ends at the next Enter (`$@` is empty and
+/// only splits the marker so the echoed command line never contains it).
 const REMOTE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const REMOTE_INPUT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -1141,6 +1147,21 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         "saved machine discovery must opt into the advertised bridge idle timeout"
     );
 
+    // The remote pane as the remote server holds it: a failed wait tells a lost
+    // client input path apart from a shell that never received the keys.
+    let remote_pane_text = || {
+        let read = send_json_request(
+            &remote_api,
+            &serde_json::json!({
+                "id": "remote-pane-read", "method": "pane.read",
+                "params": {"pane_id": remote_pane, "source": "recent", "lines": 40},
+            })
+            .to_string(),
+        );
+        read["result"]["read"]["text"]
+            .as_str()
+            .map_or_else(|| read.to_string(), str::to_owned)
+    };
     let mut input = client._master.as_ref().unwrap().take_writer().unwrap();
     send_pane_shell_command(&remote_api, remote_pane, "reconnect_survivor=ALIVE");
     for cycle in 1..=3 {
@@ -1156,21 +1177,23 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
             wait_until(Duration::from_secs(15), Duration::from_millis(20), || {
                 screen_text().contains(&marker)
             }),
-            "remote reconnect {cycle} must restore the visible screen without switching machines"
+            "remote reconnect {cycle} must restore the visible screen without switching machines\n\
+             client screen:\n{}\nremote pane:\n{}",
+            screen_text(),
+            remote_pane_text()
         );
         assert!(
             wait_until(REMOTE_INPUT_TIMEOUT, Duration::from_millis(100), || {
                 if screen_text().contains(&format!("REMOTE_ALIVE_INPUT_{cycle}")) {
                     return true;
                 }
-                write!(
-                    input,
-                    "printf 'REMOTE_%s_INPUT_{cycle}\\n' \"$reconnect_survivor\"\r"
-                )
-                .unwrap();
+                write!(input, "echo REMOTE_$reconnect_survivor$@_INPUT_{cycle}\r").unwrap();
                 false
             }),
-            "remote reconnect {cycle} must restore visible input and preserve the shell"
+            "remote reconnect {cycle} must restore visible input and preserve the shell\n\
+             client screen:\n{}\nremote pane:\n{}",
+            screen_text(),
+            remote_pane_text()
         );
     }
 
@@ -1205,9 +1228,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
             if screen_text().contains("REMOTE_SURVIVED") {
                 return true;
             }
-            input
-                .write_all(b"printf 'REMOTE_%s\\n' SURVIVED\r")
-                .unwrap();
+            input.write_all(b"echo REMOTE_$@SURVIVED\r").unwrap();
             false
         }),
         "Local loss must not interrupt remote input or output: {}",
@@ -1238,9 +1259,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
         }),
         "Local must reconnect with fresh metadata"
     );
-    input
-        .write_all(b"printf 'REMOTE_%s\\n' STILL_SELECTED\r")
-        .unwrap();
+    input.write_all(b"echo REMOTE_$@STILL_SELECTED\r").unwrap();
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             screen_text().contains("REMOTE_STILL_SELECTED")
@@ -1284,7 +1303,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
                     return true;
                 }
                 input
-                    .write_all(b"printf 'LOCAL_%s\\n' INPUT_WHILE_REMOTE_STALLED\r")
+                    .write_all(b"echo LOCAL_$@INPUT_WHILE_REMOTE_STALLED\r")
                     .unwrap();
                 false
             }),
@@ -1337,9 +1356,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
             if screen_text().contains("LOCAL_INPUT_RECOVERED") {
                 return true;
             }
-            input
-                .write_all(b"printf 'LOCAL_%s\\n' INPUT_RECOVERED\r")
-                .unwrap();
+            input.write_all(b"echo LOCAL_$@INPUT_RECOVERED\r").unwrap();
             false
         }),
         "recovered Local must accept input: {}",

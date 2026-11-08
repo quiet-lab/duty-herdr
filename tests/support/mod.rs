@@ -643,8 +643,18 @@ fn cleanup_servers_with_missing_runtime_dir() -> std::io::Result<()> {
     }
 
     for pid in iter_worktree_server_pids()? {
-        let Some(runtime_dir) = process_runtime_dir(pid)? else {
-            continue;
+        let runtime_dir = match process_runtime_dir(pid) {
+            Ok(Some(runtime_dir)) => runtime_dir,
+            Ok(None) => continue,
+            // A server of a parallel test can exit between the /proc listing and
+            // this read; it needs no cleanup, and the rest of the scan still runs.
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    || err.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
         };
 
         if should_terminate_runtime_dir(&runtime_dir, &registered_runtime_dirs) {
