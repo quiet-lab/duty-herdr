@@ -494,6 +494,11 @@ impl PaneTerminal {
         self.ghostty.set_screen_cursor_shape(shape)
     }
 
+    /// Applies `shape` only while no screen shape is applied; returns whether it changed.
+    pub(crate) fn set_screen_cursor_shape_if_unset(&self, shape: Option<u8>) -> bool {
+        self.ghostty.set_screen_cursor_shape_if_unset(shape)
+    }
+
     pub fn synchronized_output_active(&self) -> bool {
         self.ghostty.synchronized_output_active()
     }
@@ -2033,6 +2038,17 @@ impl GhosttyPaneTerminal {
         let changed = core.screen_cursor_shape != shape;
         core.screen_cursor_shape = shape;
         changed
+    }
+
+    fn set_screen_cursor_shape_if_unset(&self, shape: Option<u8>) -> bool {
+        let Ok(mut core) = self.core.lock() else {
+            return false;
+        };
+        if core.screen_cursor_shape.is_some() || shape.is_none() {
+            return false;
+        }
+        core.screen_cursor_shape = shape;
+        true
     }
 
     pub fn synchronized_output_active(&self) -> bool {

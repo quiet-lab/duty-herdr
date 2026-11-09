@@ -32,7 +32,7 @@ pub use self::{
         ToastConfig, ToastDelivery, ToastHerdrPosition, UpdateChannelConfig,
         MAX_TOAST_DELAY_SECONDS,
     },
-    screen_cursor::{ScreenCursorRules, ScreenCursorShapeConfig},
+    screen_cursor::{ScreenCursorRules, ScreenCursorShapeConfig, ScreenShapeDecision},
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, ColorTokens, SidebarConfig, SidebarTokenColor,
         SidebarTokenStyle, SpaceSidebarToken, SpacesSidebarConfig,
