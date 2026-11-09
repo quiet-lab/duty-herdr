@@ -218,6 +218,7 @@ rules = [
   { contains = "-- INSERT --", shape = "steady_bar", after_last_line_containing = "────", top_non_empty_lines = 1 },
   { contains = "Press Ctrl-C again to exit", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
   { contains = "! for shell mode", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
+  { contains = "-- INSERT --", shape = "steady_bar", bottom_non_empty_lines = 1 },
 ]
 ```
 
@@ -271,6 +272,15 @@ rules = [
 Ctrl-C заменяют строку статуса одинаково в обоих режимах редактора, режим
 по экрану не определить, поэтому правила `keep` сохраняют форму, пока эти
 строки на экране.
+
+Диалог вопроса Claude Code с активным полем ввода (пункт «Type something»)
+не имеет подвала со строкой статуса: подпись `-- INSERT --` стоит в строке
+подсказки диалога, последней на экране. Её читает последнее правило
+(`bottom_non_empty_lines = 1` без области) и ставит черту; пока поле
+не активно, подписи на экране нет, и действует `default`. Правило стоит
+после `keep`, чтобы строки Ctrl-C и `?` по-прежнему сохраняли форму.
+Оно совпадает с любым экраном, последняя непустая строка которого содержит
+`-- INSERT --`, в том числе без поля ввода.
 
 Ограничения: пока на экране строка `keep`, смена режима и `reload-config`
 форму не меняют, она обновится, когда вернётся строка статуса; строка
