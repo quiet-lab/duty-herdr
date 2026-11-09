@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.11.07.1"
+version = "2026.11.10.1"
 min_engine_version = 2
-updated_at = "2026-11-07T00:00:00Z"
+updated_at = "2026-11-10T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -210,7 +210,11 @@ all = [
 [[rules]]
 id = "generic_permission_prompt"
 state = "blocked"
-priority = 840
+# Above osc_title_working (1100): a dialog from a background subagent is open
+# while the title spinner and "Waiting for N background agents" still show.
+# The region ends at the dialog's own bottom rule and requires the option rows
+# plus "Esc to cancel", so a closed dialog left in scrollback cannot match.
+priority = 1150
 region = "after_last_horizontal_rule"
 visible_blocker = true
 contains = ["do you want to proceed?", "esc to cancel"]
