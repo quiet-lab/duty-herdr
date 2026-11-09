@@ -368,7 +368,9 @@ rules = [
 default = "steady_block"
 rules = [
   { contains = "-- INSERT --", shape = "steady_bar", after_last_line_containing = "────", top_non_empty_lines = 1 },
+  { contains = "Press Ctrl-C again to exit", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
   { contains = "! for shell mode", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
+  { contains = "-- INSERT --", shape = "steady_bar", bottom_non_empty_lines = 1 },
 ]
 "#,
         )
@@ -391,6 +393,27 @@ rules = [
             claude.shape_for_screen(&help),
             ScreenShapeDecision::Keep { fallback: Some(2) }
         );
+    }
+
+    #[test]
+    fn question_dialog_reads_insert_label_in_the_last_line() {
+        let claude = claude_top();
+        let footer = "  3. Type something.\n────────\n  4. Chat about this\n\n";
+        let active = format!(
+            "{footer}-- INSERT -- · Enter to select · ↑/↓ to navigate · ctrl+g to edit in Neovide\n"
+        );
+        assert_eq!(claude.shape_for_screen(&active), set(Some(6)));
+        let before = format!("{footer}Enter to select · ↑/↓ to navigate · Esc to cancel\n");
+        assert_eq!(claude.shape_for_screen(&before), set(Some(2)));
+        let talk = format!("-- INSERT -- in conversation\n{INPUT_BOX}  ⏵⏵ bypass\n");
+        assert_eq!(claude.shape_for_screen(&talk), set(Some(2)));
+        let ctrl_c = format!("{INPUT_BOX}  Press Ctrl-C again to exit\n");
+        assert_eq!(
+            claude.shape_for_screen(&ctrl_c),
+            ScreenShapeDecision::Keep { fallback: Some(2) }
+        );
+        let status = format!("{INPUT_BOX}  -- INSERT --\n");
+        assert_eq!(claude.shape_for_screen(&status), set(Some(6)));
     }
 
     #[test]
