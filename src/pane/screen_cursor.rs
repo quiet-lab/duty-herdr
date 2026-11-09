@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 use super::terminal::PaneTerminal;
-use crate::config::ScreenCursorShapeConfig;
+use crate::config::{ScreenCursorShapeConfig, ScreenShapeDecision};
 use crate::layout::PaneId;
 use crate::render_signal::RenderSignal;
 
@@ -96,7 +96,7 @@ impl ScreenCursorEvaluator {
             return;
         }
         // A table with only `default` does not depend on the screen.
-        let shape = if rules.rules.is_empty() {
+        let decision = if rules.rules.is_empty() {
             rules.shape_for_screen("")
         } else {
             rules.shape_for_screen(&terminal.detection_text())
@@ -108,7 +108,15 @@ impl ScreenCursorEvaluator {
         {
             return;
         }
-        if terminal.set_screen_cursor_shape(shape) {
+        // `keep` leaves the shape the previous screen selected; before any
+        // shape is applied it takes the table's default.
+        let changed = match decision {
+            ScreenShapeDecision::Set(shape) => terminal.set_screen_cursor_shape(shape),
+            ScreenShapeDecision::Keep { fallback } => {
+                terminal.set_screen_cursor_shape_if_unset(fallback)
+            }
+        };
+        if changed {
             render.request(pane_id);
         }
     }
@@ -253,6 +261,58 @@ mod tests {
         assert_eq!(shape(&runtime), 6);
     }
 
+    const CLAUDE_FOOTER: &str = r#"
+default = "steady_block"
+rules = [
+  { contains = "-- INSERT --", shape = "steady_bar", after_last_line_containing = "────", top_non_empty_lines = 1 },
+  { contains = "Press Ctrl-C again to exit", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
+]"#;
+
+    fn screen_with_status(status: &str) -> Vec<u8> {
+        format!("\x1b[2J\x1b[H────────\r\n❯ hi\r\n────────\r\n{status}").into_bytes()
+    }
+
+    #[tokio::test]
+    async fn keep_rule_leaves_the_shape_of_the_previous_screen() {
+        for (before, expected) in [("  -- INSERT --", 6), ("  ⏵⏵ bypass", 2)] {
+            let runtime = PaneRuntime::test_with_screen_bytes(40, 10, b"");
+            let render = render();
+            sync(&runtime, rules(CLAUDE_FOOTER), &render);
+            runtime.test_process_pty_bytes(&screen_with_status(before));
+            evaluate(&runtime, &render);
+            assert_eq!(shape(&runtime), expected);
+
+            runtime.test_process_pty_bytes(&screen_with_status("  Press Ctrl-C again to exit"));
+            evaluate(&runtime, &render);
+            assert_eq!(shape(&runtime), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn keep_on_a_fresh_binding_applies_the_default() {
+        let runtime = PaneRuntime::test_with_screen_bytes(40, 10, b"");
+        let render = render();
+        runtime.test_process_pty_bytes(&screen_with_status("  Press Ctrl-C again to exit"));
+        sync(&runtime, rules(CLAUDE_FOOTER), &render);
+        evaluate(&runtime, &render);
+        assert_eq!(shape(&runtime), 2);
+    }
+
+    #[tokio::test]
+    async fn output_with_insert_label_above_footer_lines_selects_the_bar() {
+        let runtime = PaneRuntime::test_with_screen_bytes(40, 10, b"");
+        let render = render();
+        sync(&runtime, rules(CLAUDE_FOOTER), &render);
+        runtime.test_process_pty_bytes(&screen_with_status(
+            "  -- INSERT --\r\n\r\n  ● main\r\n  ◯ agent",
+        ));
+        runtime.screen_cursor.observe_output();
+        tokio::time::timeout(WAKE_HANG_BOUND, render.notify.notified())
+            .await
+            .expect("shape change wakes the renderer");
+        assert_eq!(shape(&runtime), 6);
+    }
+
     #[tokio::test]
     async fn synchronized_frame_is_evaluated_once_it_closes() {
         let runtime = PaneRuntime::test_with_screen_bytes(40, 6, b"other");
@@ -306,27 +366,38 @@ mod tests {
     #[ignore = "profile"]
     async fn render_scale_profile_screen_cursor_evaluation() {
         const ITERATIONS: usize = 1000;
-        for (cols, rows) in [(80u16, 24u16), (200, 60)] {
-            let line = format!("{}\r\n", "x".repeat(usize::from(cols) - 1));
-            let runtime = PaneRuntime::test_with_screen_bytes(
-                cols,
-                rows,
-                line.repeat(usize::from(rows)).as_bytes(),
-            );
-            let render = render();
-            sync(&runtime, rules(MARKER_BAR), &render);
-            let mut samples = Vec::with_capacity(ITERATIONS);
-            for _ in 0..ITERATIONS {
-                let started = std::time::Instant::now();
-                evaluate(&runtime, &render);
-                samples.push(started.elapsed().as_nanos());
+        // The footer rules scan the screen from the bottom to the input box border.
+        const FOOTER_RULES: &str = r#"rules = [
+  { contains = "-- INSERT --", shape = "steady_bar", after_last_line_containing = "────", top_non_empty_lines = 1 },
+  { contains = "Press Ctrl-C again to exit", shape = "keep", after_last_line_containing = "────", top_non_empty_lines = 1 },
+]"#;
+        for (name, table, footer) in [
+            ("marker", MARKER_BAR, false),
+            ("footer", FOOTER_RULES, true),
+        ] {
+            for (cols, rows) in [(80u16, 24u16), (200, 60)] {
+                let line = format!("{}\r\n", "x".repeat(usize::from(cols) - 1));
+                let mut screen = line.repeat(usize::from(rows) - if footer { 4 } else { 0 });
+                if footer {
+                    let border = "─".repeat(usize::from(cols) - 1);
+                    screen.push_str(&format!("{border}\r\n❯ hi\r\n{border}\r\n  ⏵⏵ status"));
+                }
+                let runtime = PaneRuntime::test_with_screen_bytes(cols, rows, screen.as_bytes());
+                let render = render();
+                sync(&runtime, rules(table), &render);
+                let mut samples = Vec::with_capacity(ITERATIONS);
+                for _ in 0..ITERATIONS {
+                    let started = std::time::Instant::now();
+                    evaluate(&runtime, &render);
+                    samples.push(started.elapsed().as_nanos());
+                }
+                samples.sort_unstable();
+                println!(
+                    "screen_cursor_evaluation {name} {cols}x{rows} median_us={} p95_us={}",
+                    samples[ITERATIONS / 2] / 1000,
+                    samples[ITERATIONS * 95 / 100] / 1000
+                );
             }
-            samples.sort_unstable();
-            println!(
-                "screen_cursor_evaluation {cols}x{rows} median_us={} p95_us={}",
-                samples[ITERATIONS / 2] / 1000,
-                samples[ITERATIONS * 95 / 100] / 1000
-            );
         }
     }
 
