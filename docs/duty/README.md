@@ -688,6 +688,12 @@ stderr. Уведомление идёт, как `herdr notification show`: вс�
 физической клавишей. Для такого терминала привязке дают обе клавиши:
 `key = ["ctrl+alt+r", "ctrl+alt+к"]`.
 
+Клавиша Delete под WezTerm: без флага 8 протокола kitty (`>7u`, запрос herdr) WezTerm
+отправляет Delete байтом `\x08` (issue WezTerm #4785). Клиент при `TERM_PROGRAM=WezTerm` и
+подтверждённом хостом протоколе kitty переписывает одиночный `\x08` в `CSI 3 ~`; `\x1b\x08`
+и `\x7f` не меняются, у других хостов и у WezTerm без kitty `\x08` остаётся Ctrl+H.
+Обход снимается, когда WezTerm отправляет `CSI 3 ~` для Delete без флага 8.
+
 Та же команда без клавиши — метод `pane.run_command`:
 
 ```sh

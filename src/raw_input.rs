@@ -226,6 +226,9 @@ pub(crate) struct RawInputByteFramer {
     split_coalesced_escape: bool,
     #[cfg(unix)]
     host_escape_disambiguation_active: bool,
+    /// See `set_wezterm_kitty_delete_workaround`.
+    #[cfg(unix)]
+    wezterm_kitty_delete_workaround: bool,
     #[cfg(unix)]
     awaiting_mouse_tail_after: Option<usize>,
 }
@@ -260,7 +263,10 @@ impl RawInputByteFramer {
 
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
         if data.is_empty() {
-            return self.push_extended();
+            let chunks = self.push_extended();
+            #[cfg(unix)]
+            let chunks = self.apply_wezterm_kitty_delete_workaround(chunks);
+            return chunks;
         }
         // Bytes after the idle limit are never part of the abandoned reply.
         self.drop_abandoned_host_color_reply();
@@ -268,6 +274,8 @@ impl RawInputByteFramer {
         let chunks = self.push_extended();
         self.partial_host_color_reply_read_at =
             starts_with_incomplete_default_color_response(&self.buffer).then(Instant::now);
+        #[cfg(unix)]
+        let chunks = self.apply_wezterm_kitty_delete_workaround(chunks);
         chunks
     }
 
@@ -419,6 +427,28 @@ impl RawInputByteFramer {
         self.host_escape_disambiguation_active = active;
     }
 
+    /// WezTerm with the kitty keyboard protocol but without flag 8 reports
+    /// Delete as a bare `\x08` (WezTerm issue #4785) and Backspace as `\x7f`.
+    /// Every modified Ctrl+H or Ctrl+Backspace arrives as `CSI u` in that mode,
+    /// so a bare `\x08` can only be Delete: rewrite it to `CSI 3 ~`.
+    /// Remove once WezTerm sends `CSI 3 ~` for Delete without flag 8.
+    #[cfg(unix)]
+    pub(crate) fn set_wezterm_kitty_delete_workaround(&mut self, active: bool) {
+        self.wezterm_kitty_delete_workaround = active;
+    }
+
+    #[cfg(unix)]
+    fn apply_wezterm_kitty_delete_workaround(&self, mut chunks: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        if self.wezterm_kitty_delete_workaround {
+            for chunk in &mut chunks {
+                if chunk.as_slice() == [0x08] {
+                    *chunk = b"\x1b[3~".to_vec();
+                }
+            }
+        }
+        chunks
+    }
+
     /// Pending bytes that could still be a key on their own: a lone ESC or ESC
     /// plus one introducer. Legacy hosts send those for Escape and Alt+key, and
     /// host text bindings (e.g. Ghostty `text:\x1bO`) send them even when the
@@ -474,6 +504,13 @@ impl RawInputByteFramer {
     }
 
     pub(crate) fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
+        let chunks = self.flush_timeout_inner();
+        #[cfg(unix)]
+        let chunks = self.apply_wezterm_kitty_delete_workaround(chunks);
+        chunks
+    }
+
+    fn flush_timeout_inner(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
         self.expire_unanswered_host_queries();
 
@@ -2383,6 +2420,56 @@ mod tests {
             })
         ));
         assert!(framer.flush_timeout().is_empty());
+    }
+
+    #[cfg(unix)]
+    fn framed_with_wezterm_workaround(active: bool, input: &[u8]) -> Vec<Vec<u8>> {
+        let mut framer = RawInputByteFramer::for_host_input();
+        framer.set_wezterm_kitty_delete_workaround(active);
+        let mut chunks = framer.push(input);
+        chunks.extend(framer.flush_timeout());
+        chunks
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wezterm_kitty_bare_backspace_byte_becomes_delete() {
+        let chunks = framed_with_wezterm_workaround(true, b"\x08");
+        assert_eq!(chunks, vec![b"\x1b[3~".to_vec()]);
+        let events = parse_framed_input(&chunks[0]);
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().unwrap(),
+            KeyCode::Delete,
+            KeyModifiers::empty(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bare_backspace_byte_is_unchanged_without_wezterm_kitty() {
+        // WezTerm without kitty, or another host: 0x08 stays Ctrl+H / Backspace.
+        assert_eq!(
+            framed_with_wezterm_workaround(false, b"\x08"),
+            vec![b"\x08".to_vec()]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wezterm_kitty_workaround_leaves_alt_backspace_and_del_byte() {
+        assert_eq!(
+            framed_with_wezterm_workaround(true, b"\x1b\x08"),
+            vec![b"\x1b\x08".to_vec()]
+        );
+        assert_eq!(
+            framed_with_wezterm_workaround(true, b"\x7f"),
+            vec![b"\x7f".to_vec()]
+        );
+        assert_eq!(
+            framed_with_wezterm_workaround(true, b"a\x08b"),
+            vec![b"a".to_vec(), b"\x1b[3~".to_vec(), b"b".to_vec()]
+        );
     }
 
     #[test]

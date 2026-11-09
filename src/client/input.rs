@@ -76,6 +76,16 @@ pub fn stdin_reader_loop(
     );
 }
 
+/// Narrowest condition for the bare-`\x08` Delete rewrite: host is WezTerm and
+/// has confirmed the kitty keyboard protocol (WezTerm issue #4785).
+#[cfg(unix)]
+fn wezterm_kitty_delete_workaround_needed(
+    kitty_confirmed: bool,
+    term_program: Option<&str>,
+) -> bool {
+    kitty_confirmed && term_program == Some("WezTerm")
+}
+
 #[cfg(unix)]
 fn unix_stdin_reader_loop(
     event_tx: mpsc::Sender<ClientLoopEvent>,
@@ -95,6 +105,10 @@ fn unix_stdin_reader_loop(
     let mut scratch = [0u8; 4096];
     let mut framer = crate::raw_input::RawInputByteFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
+    framer.set_wezterm_kitty_delete_workaround(wezterm_kitty_delete_workaround_needed(
+        host_escape_disambiguation_active,
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+    ));
     if host_color_query_sent {
         framer.host_color_query_sent();
         framer.enable_host_color_scheme_change_tracking();
@@ -474,6 +488,24 @@ fn poll_read_ready(fd: i32, timeout_ms: i32) -> Option<bool> {
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn wezterm_delete_workaround_needs_wezterm_and_kitty() {
+        assert!(wezterm_kitty_delete_workaround_needed(
+            true,
+            Some("WezTerm")
+        ));
+        assert!(!wezterm_kitty_delete_workaround_needed(
+            false,
+            Some("WezTerm")
+        ));
+        assert!(!wezterm_kitty_delete_workaround_needed(
+            true,
+            Some("ghostty")
+        ));
+        assert!(!wezterm_kitty_delete_workaround_needed(true, None));
+    }
+
     // The stdin reader thread is hard to unit test since it reads from actual stdin.
     // Integration tests will verify the full client→server input flow.
     // Here we test the event type construction.
