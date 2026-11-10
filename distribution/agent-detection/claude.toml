@@ -119,13 +119,14 @@ visible_blocker = true
 # live_prompt_box reads the cursor row as an idle prompt. Gate on the dialog
 # shape that stays visible: the selected numbered row, then the horizontal rule,
 # then the numbered "Chat about this" row, then at most an "Enter to select"
-# footer line as the last content of the screen. A named session (claude -n)
+# footer (one wrapped continuation line allowed in narrow panes) as the last
+# content of the screen. A named session (claude -n)
 # draws its name divider below the footer, optionally followed by the counted
 # task panel; accept only that shape after the footer, as
 # live_blocked_form_named_session does. An ordinary prompt box never has a
 # numbered row below its closing rule, and a closed dialog in scrollback is
 # followed by the prompt box, which this tail rejects.
-regex = ['(?m)^[ \t]*\x{276F}[ \t]+\d+\.[ \t]+[^\n]*\n(?:[^\n]*\n){0,6}?[ \t]*\x{2500}{3,}[ \t]*\n[ \t]+\d+\.[ \t]+Chat about this[ \t]*(?:\n[ \t]*)*(?:[^\n]*Enter to select[^\n]*\n?)?(?:[ \t]*\n)*(?:[ \t]*\x{2500}{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*)?[ \t]*\z']
+regex = ['(?m)^[ \t]*\x{276F}[ \t]+\d+\.[ \t]+[^\n]*\n(?:[^\n]*\n){0,6}?[ \t]*\x{2500}{3,}[ \t]*\n[ \t]+\d+\.[ \t]+Chat about this[ \t]*(?:\n[ \t]*)*(?:[^\n]*Enter\s+to\s+select[^\n]*(?:\n[ \t]*[^\s\x{2500}][^\n]*)?\n?)?(?:[ \t]*\n)*(?:[ \t]*\x{2500}{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*)?[ \t]*\z']
 
 [[rules]]
 id = "live_blocked_review_answers"
@@ -137,10 +138,10 @@ visible_blocker = true
 # footer. In a named session (claude -n) the name divider below it closes a
 # prompt box around the options, so live_prompt_box reads "❯ 1. Submit
 # answers" as an idle prompt. Gate on the question line, then numbered option
-# rows with the selected one marked, then at most a footer line and the name
-# divider with the counted task panel as the last content of the screen.
-contains = ["review your answers"]
-regex = ['(?m)^[ \t]*Ready to submit your answers\?[ \t]*\n(?:[ \t]*\n)*(?:[ \t]+\d+\.[^\n]*\n)*[ \t]*\x{276F}[ \t]+\d+\.[^\n]*(?:\n[ \t]+\d+\.[^\n]*)*(?:\n[ \t]*)*(?:[^\n]*(?:Enter to (?:select|confirm)|Esc to cancel)[^\n]*(?:\n[ \t]*)*)?(?:[ \t]*\x{2500}{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*)?\z']
+# rows with the selected one marked, then at most the name divider with the
+# counted task panel as the last content of the screen. The heading "Review
+# your answers" is not required: in a short pane it scrolls off.
+regex = ['(?m)^[ \t]*Ready to submit your answers\?[ \t]*\n(?:[ \t]*\n)*(?:[ \t]+\d+\.[^\n]*\n)*[ \t]*\x{276F}[ \t]+\d+\.[^\n]*(?:\n[ \t]+\d+\.[^\n]*)*(?:\n[ \t]*)*(?:[ \t]*\x{2500}{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*)?\z']
 
 [[rules]]
 id = "dynamic_workflow_prompt"
